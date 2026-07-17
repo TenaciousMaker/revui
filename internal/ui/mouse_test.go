@@ -27,7 +27,7 @@ func TestMouseWheelScrollsPaneUnderPointer(t *testing.T) {
 		}
 		repo.Files = append(repo.Files, diff.File{Path: fmt.Sprintf("file%d.go", file), Lines: lines})
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestMouseWheelBurstCoalescesIntoOneViewportUpdate(t *testing.T) {
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 		Files: []diff.File{{Path: "app.go", Lines: lines}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSustainedMouseWheelGestureAcceleratesAcrossFrames(t *testing.T) {
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 		Files: []diff.File{{Path: "app.go", Lines: lines}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func BenchmarkMouseWheelRendering(b *testing.B) {
 		Root: b.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(b.TempDir(), "review.json"),
 		Files: []diff.File{{Path: "Large.cls", Lines: lines}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(b, repo)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func BenchmarkFileTreeWheelRendering(b *testing.B) {
 	for index := 0; index < 5000; index++ {
 		repo.AllPaths = append(repo.AllPaths, fmt.Sprintf("src/package%03d/module%03d/file%04d.cls", index%200, index%500, index))
 	}
-	m, err := New(repo)
+	m, err := newTestModel(b, repo)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestMouseWheelUsesVisualRowsInSplitAndSourceViews(t *testing.T) {
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 		Files: []diff.File{{Path: "app.go", Lines: lines}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestMouseClickPositionsFileDiffSplitAndSourceRows(t *testing.T) {
 		}
 		repo.Files = append(repo.Files, diff.File{Path: fmt.Sprintf("file%d.go", file), Lines: lines})
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestMouseClickPositionsFileDiffSplitAndSourceRows(t *testing.T) {
 
 func TestMouseWheelScrollsSearchResultsAndViewEnablesMouse(t *testing.T) {
 	repo := &gitrepo.Repository{Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json")}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestMouseWheelScrollsFuzzyResultsWithoutMovingSelection(t *testing.T) {
 	for index := 0; index < 15; index++ {
 		repo.Files = append(repo.Files, diff.File{Path: fmt.Sprintf("file%d.go", index)})
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestMouseWheelScrollsFuzzyResultsWithoutMovingSelection(t *testing.T) {
 
 func TestMouseClickPositionsRepositorySearchResult(t *testing.T) {
 	repo := &gitrepo.Repository{Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json")}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestMouseClickPositionsRepositorySearchResult(t *testing.T) {
 
 func TestMouseClickUsesScrolledRepositorySearchWindow(t *testing.T) {
 	repo := &gitrepo.Repository{Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json")}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestMouseClickPositionsFuzzyFileSearchResult(t *testing.T) {
 	for index := 0; index < 4; index++ {
 		repo.Files = append(repo.Files, diff.File{Path: fmt.Sprintf("file%d.go", index)})
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestMouseSelectedTextSeedsFindInRightPane(t *testing.T) {
 			},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestMouseSelectionStaysInsideOriginatingCodePane(t *testing.T) {
 			},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}

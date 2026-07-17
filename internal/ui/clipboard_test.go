@@ -17,7 +17,7 @@ func TestClipboardTextUsesMouseRangeAndCurrentLine(t *testing.T) {
 			{Kind: diff.Context, Text: "\treturn value", OldNumber: 2, NewNumber: 2},
 		}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}

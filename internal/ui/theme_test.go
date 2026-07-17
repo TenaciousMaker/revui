@@ -27,7 +27,7 @@ func TestNoColorThemeHasNoANSIColorSequences(t *testing.T) {
 func TestNoColorAppliesToCompleteView(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	root := t.TempDir()
-	m, err := New(&gitrepo.Repository{
+	m, err := newTestModel(t, &gitrepo.Repository{
 		Root: root, Branch: "feature", Base: "main",
 		ReviewPath: filepath.Join(root, "review.json"), PreferencesPath: filepath.Join(root, "preferences.json"),
 		Files: []diff.File{{Path: "main.go", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "return true", NewNumber: 1}}}},

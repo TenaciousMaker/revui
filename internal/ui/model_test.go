@@ -40,7 +40,7 @@ func TestResponsiveRenderAndFuzzySearch(t *testing.T) {
 			{Path: "README.md", Status: "M", Deletions: 1, Lines: []diff.Line{{Kind: diff.Deletion, Text: "old", OldNumber: 1}}},
 		},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRealtimeWatcherCoalescesRefreshesAndPreservesCursor(t *testing.T) {
 		}}},
 		AllPaths: []string{"service.go"},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestDialogOverlayPreservesReviewAndHugsContent(t *testing.T) {
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 		Files: []diff.File{{Path: "service.go", Lines: []diff.Line{{Kind: diff.Addition, Text: "func changed() {}", NewNumber: 1}}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestRepositorySearchRendersChunksAndOpensExactSourceLine(t *testing.T) {
 			},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestRepositorySearchAcceptsBracketedPaste(t *testing.T) {
 	repo := &gitrepo.Repository{
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestSearchFieldsSupportCursorMovementAndCtrlU(t *testing.T) {
 		Files: []diff.File{{Path: "abcdef.go"}, {Path: "Xef.go"}},
 	}
 	for _, mode := range []mode{searchingRepository, searching} {
-		m, err := New(repo)
+		m, err := newTestModel(t, repo)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -296,7 +296,7 @@ func TestFullFileToggleOpensAtDiffLineAndReturns(t *testing.T) {
 			{Kind: diff.Addition, Text: "line 8", NewNumber: 8},
 		}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestRepositorySearchKeepsFittingResultsInViewport(t *testing.T) {
 	repo := &gitrepo.Repository{
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestTreeTogglePreservesFileAndNavigatesVisibleNodes(t *testing.T) {
 			{Path: "README.md", Lines: []diff.Line{{Kind: diff.Addition, Text: "readme", NewNumber: 1}}},
 		},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 		ReviewPath: filepath.Join(root, "review.json"), PreferencesPath: preferencesPath,
 		Files: []diff.File{{Path: "service.go", Lines: []diff.Line{{Kind: diff.Addition, Text: "new", NewNumber: 1}}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	if err := config.Save(preferencesPath, config.Preferences{}); err != nil {
 		t.Fatal(err)
 	}
-	m, err = New(repo)
+	m, err = newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestFileScopeCyclesContextAllAndChanged(t *testing.T) {
 		Files:    []diff.File{{Path: "src/changed.go", Status: "M", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "func Changed() {}", NewNumber: 1}}}},
 		AllPaths: []string{"other/unrelated.go", "src/changed.go", "src/context.go"},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +582,7 @@ func TestReviewedFilePersistsAndResetsWhenDiffChanges(t *testing.T) {
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: reviewPath,
 		Files: []diff.File{{Path: "service.go", Status: "M", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "first", NewNumber: 1}}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ func TestWideFilePaneFitsVisibleTreeNames(t *testing.T) {
 			Lines:     []diff.Line{{Kind: diff.Addition, Text: "changed", NewNumber: 1}},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func TestWideFilePaneFitsVisibleTreeNames(t *testing.T) {
 
 func TestWideFilePaneExplainsNarrowTerminalLimit(t *testing.T) {
 	repo := &gitrepo.Repository{Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json")}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 			{Kind: diff.Addition, Text: "addedValue", NewNumber: 10},
 		}}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func TestSplitRenderExpandsTabsWithoutWrappingRows(t *testing.T) {
 			},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +771,7 @@ func TestSplitNavigationMovesByVisualRow(t *testing.T) {
 			},
 		}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +803,7 @@ func TestSplitScrollingKeepsStyledCellsInsidePaneBoundaries(t *testing.T) {
 		ReviewPath: filepath.Join(t.TempDir(), "review.json"),
 		Files:      []diff.File{{Path: "service.py", Lines: lines}},
 	}
-	m, err := New(repo)
+	m, err := newTestModel(t, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
