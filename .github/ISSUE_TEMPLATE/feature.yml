@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a focused improvement to the local review workflow.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Review problem
+      description: What is difficult today, independent of a proposed implementation?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Desired workflow
+      description: Show how the improvement would fit into a real review session.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

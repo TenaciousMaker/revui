@@ -1,0 +1,23 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - nosprintfhostport
+    - staticcheck
+    - unused
+formatters:
+  enable:
+    - gofmt
+run:
+  timeout: 5m
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

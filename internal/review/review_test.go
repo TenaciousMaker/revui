@@ -1,6 +1,7 @@
 package review
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -8,8 +9,9 @@ import (
 func TestSaveLoadAndUpdateSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "review.json")
 	session := Session{Branch: "feature/review", Base: "main"}
-	comment := NewComment("Handle the error", Anchor{Path: "main.go", NewStart: 12, NewEnd: 12})
-	session.Upsert(comment)
+	if !session.ToggleReviewed("main.go", "diff-v1") || !session.IsReviewed("main.go", "diff-v1") {
+		t.Fatal("file was not marked reviewed")
+	}
 	if err := Save(path, session); err != nil {
 		t.Fatal(err)
 	}
@@ -17,17 +19,11 @@ func TestSaveLoadAndUpdateSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Branch != "feature/review" || len(loaded.Comments) != 1 {
+	if loaded.Branch != "feature/review" || !loaded.IsReviewed("main.go", "diff-v1") {
 		t.Fatalf("unexpected session: %#v", loaded)
 	}
-	loaded.Comments[0].Resolved = true
-	loaded.Upsert(loaded.Comments[0])
-	if len(loaded.Unresolved()) != 0 {
-		t.Fatal("resolved comment returned as unresolved")
-	}
-	loaded.Delete(comment.ID)
-	if len(loaded.Comments) != 0 {
-		t.Fatal("comment was not deleted")
+	if loaded.IsReviewed("main.go", "diff-v2") {
+		t.Fatal("changed fingerprint remained reviewed")
 	}
 }
 
@@ -38,5 +34,22 @@ func TestLoadMissingStartsSession(t *testing.T) {
 	}
 	if session.Version != Version || session.Branch != "feature" || session.Base != "main" {
 		t.Fatalf("unexpected new session: %#v", session)
+	}
+}
+
+func TestLoadRejectsCorruptAndUnsupportedSession(t *testing.T) {
+	for name, content := range map[string]string{
+		"corrupt":     "{",
+		"unsupported": `{"version":99}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "review.json")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path, "feature", "main"); err == nil {
+				t.Fatal("invalid review session loaded")
+			}
+		})
 	}
 }

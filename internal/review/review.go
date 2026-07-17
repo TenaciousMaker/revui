@@ -1,47 +1,39 @@
 package review
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
 const Version = 1
 
-type Anchor struct {
-	Path      string `json:"path,omitempty"`
-	OldStart  int    `json:"old_start,omitempty"`
-	OldEnd    int    `json:"old_end,omitempty"`
-	NewStart  int    `json:"new_start,omitempty"`
-	NewEnd    int    `json:"new_end,omitempty"`
-	Context   string `json:"context,omitempty"`
-	WholeRepo bool   `json:"whole_repo,omitempty"`
-}
-
-type Comment struct {
-	ID        string    `json:"id"`
-	Body      string    `json:"body"`
-	Anchor    Anchor    `json:"anchor"`
-	Resolved  bool      `json:"resolved"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
 type Session struct {
-	Version  int       `json:"version"`
-	Branch   string    `json:"branch"`
-	Base     string    `json:"base"`
-	Comments []Comment `json:"comments"`
-	Updated  time.Time `json:"updated_at"`
+	Version  int               `json:"version"`
+	Branch   string            `json:"branch"`
+	Base     string            `json:"base"`
+	Reviewed map[string]string `json:"reviewed_files,omitempty"`
+	Updated  time.Time         `json:"updated_at"`
 }
 
-type Store struct{ Path string }
+func (s Session) IsReviewed(path, fingerprint string) bool {
+	return fingerprint != "" && s.Reviewed[path] == fingerprint
+}
+
+func (s *Session) ToggleReviewed(path, fingerprint string) bool {
+	if s.Reviewed == nil {
+		s.Reviewed = map[string]string{}
+	}
+	if s.IsReviewed(path, fingerprint) {
+		delete(s.Reviewed, path)
+		return false
+	}
+	s.Reviewed[path] = fingerprint
+	return true
+}
 
 func Load(path, branch, base string) (Session, error) {
 	s := Session{Version: Version, Branch: branch, Base: base}
@@ -62,81 +54,39 @@ func Load(path, branch, base string) (Session, error) {
 }
 
 func Save(path string, session Session) error {
+	session.Version = Version
+	session.Updated = time.Now().UTC()
+	return saveJSON(path, ".review-*.json", session)
+}
+
+func saveJSON(path, pattern string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	session.Version = Version
-	session.Updated = time.Now().UTC()
-	data, err := json.MarshalIndent(session, "", "  ")
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".review-*.json")
+	tmp, err := os.CreateTemp(filepath.Dir(path), pattern)
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, path)
-}
-
-func NewComment(body string, anchor Anchor) Comment {
-	var bytes [8]byte
-	_, _ = rand.Read(bytes[:])
-	now := time.Now().UTC()
-	return Comment{ID: hex.EncodeToString(bytes[:]), Body: body, Anchor: anchor, CreatedAt: now, UpdatedAt: now}
-}
-
-func (s *Session) Upsert(comment Comment) {
-	comment.UpdatedAt = time.Now().UTC()
-	for i := range s.Comments {
-		if s.Comments[i].ID == comment.ID {
-			s.Comments[i] = comment
-			return
-		}
-	}
-	s.Comments = append(s.Comments, comment)
-}
-
-func (s *Session) Delete(id string) {
-	for i := range s.Comments {
-		if s.Comments[i].ID == id {
-			s.Comments = append(s.Comments[:i], s.Comments[i+1:]...)
-			return
-		}
-	}
-}
-
-func (s Session) Unresolved() []Comment {
-	comments := make([]Comment, 0, len(s.Comments))
-	for _, comment := range s.Comments {
-		if !comment.Resolved {
-			comments = append(comments, comment)
-		}
-	}
-	sort.SliceStable(comments, func(i, j int) bool {
-		if comments[i].Anchor.Path != comments[j].Anchor.Path {
-			return comments[i].Anchor.Path < comments[j].Anchor.Path
-		}
-		return anchorLine(comments[i].Anchor) < anchorLine(comments[j].Anchor)
-	})
-	return comments
-}
-
-func anchorLine(anchor Anchor) int {
-	if anchor.NewStart > 0 {
-		return anchor.NewStart
-	}
-	return anchor.OldStart
 }

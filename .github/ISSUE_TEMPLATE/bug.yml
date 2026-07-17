@@ -1,0 +1,37 @@
+name: Bug report
+description: Report behavior that is incorrect or unexpectedly slow.
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include what you expected and what revui did instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: revui version
+      placeholder: Output of revui --version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: macOS/Linux, terminal, shell, local/SSH/tmux
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Additional context
+      description: Screenshots and sanitized repository details are useful. Do not include secrets.

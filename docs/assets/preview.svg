@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">revui branch review interface</title>
+  <desc id="desc">A dark terminal with a file tree on the left and a syntax highlighted unified diff on the right.</desc>
+  <rect width="1200" height="675" rx="14" fill="#0d1117"/>
+  <rect x="1" y="1" width="1198" height="673" rx="13" fill="none" stroke="#30363d" stroke-width="2"/>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 15px; fill: #c9d1d9 }
+    .muted { fill: #8b949e } .blue { fill: #58a6ff } .green { fill: #56d364 } .red { fill: #ff7b72 }
+    .purple { fill: #d2a8ff } .cyan { fill: #79c0ff } .bold { font-weight: 700 }
+  </style>
+  <rect x="0" y="0" width="1200" height="46" rx="14" fill="#161b22"/>
+  <rect x="0" y="32" width="1200" height="14" fill="#161b22"/>
+  <text x="22" y="29" class="blue bold">REVUI</text>
+  <text x="90" y="29" class="bold">feature/review-workflow</text>
+  <text x="310" y="29" class="muted">→ origin/main</text>
+  <text x="1015" y="29" class="green">+128</text><text x="1070" y="29" class="red">-34</text><text x="1120" y="29" class="purple">● live</text>
+  <rect x="0" y="46" width="330" height="589" fill="#161b22"/>
+  <rect x="329" y="46" width="2" height="589" fill="#1f6feb"/>
+  <text x="18" y="77" class="blue bold">FILES  7</text><text x="115" y="77" class="muted">TREE</text><text x="173" y="77" class="muted">CONTEXT</text>
+  <text x="18" y="111" class="muted">▾ internal</text>
+  <text x="38" y="140" class="muted">▾ review</text>
+  <rect x="8" y="151" width="313" height="31" rx="3" fill="#1f6feb" opacity=".72"/>
+  <text x="58" y="173" class="cyan">M session.go</text><text x="262" y="173" class="green">+18</text><text x="300" y="173" class="red">-4</text>
+  <text x="38" y="211" class="muted">▾ ui</text>
+  <text x="58" y="240" class="cyan">M model.go</text><text x="262" y="240" class="green">+42</text><text x="300" y="240" class="red">-9</text>
+  <text x="58" y="269" class="green">A state.go</text><text x="262" y="269" class="green">+51</text>
+  <text x="18" y="307" class="muted">▾ docs</text>
+  <text x="38" y="336" class="green">A architecture.md</text><text x="262" y="336" class="green">+36</text>
+  <text x="18" y="374" class="cyan">M README.md</text><text x="262" y="374" class="green">+74</text><text x="300" y="374" class="red">-6</text>
+  <text x="18" y="403" class="cyan">M Makefile</text><text x="262" y="403" class="green">+19</text><text x="300" y="403" class="red">-3</text>
+  <text x="18" y="432" class="green">A .goreleaser.yaml</text><text x="262" y="432" class="green">+38</text>
+  <text x="350" y="77" class="blue bold">DIFF</text><text x="402" y="77" class="muted">UNIFIED</text><text x="482" y="77" class="bold">internal/review/session.go</text>
+  <rect x="342" y="91" width="846" height="29" fill="#172b4d"/>
+  <text x="360" y="111" class="cyan">@@ -8,8 +8,16 @@ type Session struct {</text>
+  <text x="360" y="146" class="muted">  8  8</text><text x="448" y="146" class="purple">type</text><text x="488" y="146" class="cyan"> Session</text><text x="555" y="146"> struct {</text>
+  <rect x="342" y="157" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="177" class="green">     9 +</text><text x="448" y="177" class="muted">// Session tracks local review progress.</text>
+  <text x="360" y="211" class="muted">  9 10</text><text x="448" y="211">Branch   </text><text x="535" y="211" class="cyan">string</text>
+  <text x="360" y="240" class="muted"> 10 11</text><text x="448" y="240">Base     </text><text x="535" y="240" class="cyan">string</text>
+  <rect x="342" y="251" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="271" class="green">    12 +</text><text x="448" y="271">Updated  </text><text x="535" y="271" class="cyan">int64</text>
+  <text x="360" y="305" class="muted"> 11 13</text><text x="448" y="305">Reviewed </text><text x="535" y="305" class="purple">map</text><text x="565" y="305">[</text><text x="575" y="305" class="cyan">string</text><text x="625" y="305">]</text><text x="635" y="305" class="cyan">string</text>
+  <text x="360" y="334" class="muted"> 12 14</text><text x="448" y="334">}</text>
+  <rect x="342" y="355" width="846" height="29" fill="#172b4d"/>
+  <text x="360" y="375" class="cyan">@@ -18,3 +26,9 @@ func (s Session) IsReviewed(...) bool {</text>
+  <rect x="342" y="396" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="416" class="green">    27 +</text><text x="448" y="416" class="purple">func</text><text x="490" y="416"> (s Session) ToggleReviewed(path </text><text x="770" y="416" class="cyan">string</text><text x="820" y="416">) </text><text x="840" y="416" class="cyan">bool</text><text x="875" y="416"> {</text>
+  <rect x="342" y="425" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="445" class="green">    28 +</text><text x="480" y="445" class="purple">if</text><text x="505" y="445"> s.IsReviewed(path, fingerprint) {</text>
+  <rect x="342" y="454" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="474" class="green">    29 +</text><text x="505" y="474" class="purple">delete</text><text x="560" y="474">(s.Reviewed, path)</text>
+  <rect x="342" y="483" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="503" class="green">    30 +</text><text x="505" y="503" class="purple">return</text><text x="565" y="503" class="red"> false</text>
+  <rect x="342" y="512" width="846" height="29" fill="#1f2a24"/>
+  <text x="360" y="532" class="green">    31 +</text><text x="480" y="532">}</text>
+  <rect x="0" y="635" width="1200" height="40" rx="14" fill="#161b22"/>
+  <text x="18" y="660" class="muted">Ready to review. Press ? for keys.</text>
+  <text x="760" y="660" class="muted">t tree   A scope   f find   o source   y copy   ? help</text>
+</svg>
