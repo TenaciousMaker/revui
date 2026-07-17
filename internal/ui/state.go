@@ -28,17 +28,20 @@ type filePaneState struct {
 
 // contentPaneState owns diff and full-source navigation.
 type contentPaneState struct {
-	view           viewMode
-	line           int
-	lineScroll     int
-	splitCursor    int
-	splitScroll    int
-	selectFrom     int
-	sourcePath     string
-	sourceLines    []string
-	sourceLine     int
-	sourceScroll   int
-	sourceFromBase bool
+	view             viewMode
+	line             int
+	lineScroll       int
+	splitCursor      int
+	splitScroll      int
+	selectFrom       int
+	sourcePath       string
+	sourceLines      []string
+	sourceLine       int
+	sourceScroll     int
+	sourceFromBase   bool
+	ignoreWhitespace bool
+	ignoreMoved      bool
+	semanticReflow   bool
 }
 
 // searchState owns both changed-file fuzzy search and repository text search.

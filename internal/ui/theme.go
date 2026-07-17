@@ -10,6 +10,8 @@ const (
 	panelBackground       = "#161B22"
 	addedLineBackground   = "#1F2A24"
 	deletedLineBackground = "#51252B"
+	addedWordBackground   = "#28643C"
+	deletedWordBackground = "#8A3340"
 	selectedRowBackground = "#1D58B3"
 )
 

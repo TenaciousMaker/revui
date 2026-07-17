@@ -481,7 +481,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	root := t.TempDir()
 	preferencesPath := filepath.Join(root, "preferences.json")
 	if err := config.Save(preferencesPath, config.Preferences{
-		FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split",
+		FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split", IgnoreWhitespace: true, IgnoreMoved: true, SemanticReflow: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -494,8 +494,8 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.fileLayout != treeFiles || m.fileScope != allRepositoryFiles || !m.wideFiles || m.view != split {
-		t.Fatalf("preferences were not restored: layout=%v scope=%v wide=%v view=%v", m.fileLayout, m.fileScope, m.wideFiles, m.view)
+	if m.fileLayout != treeFiles || m.fileScope != allRepositoryFiles || !m.wideFiles || m.view != split || !m.ignoreWhitespace || !m.ignoreMoved || !m.semanticReflow {
+		t.Fatalf("preferences were not restored: layout=%v scope=%v wide=%v view=%v whitespace=%v moved=%v reflow=%v", m.fileLayout, m.fileScope, m.wideFiles, m.view, m.ignoreWhitespace, m.ignoreMoved, m.semanticReflow)
 	}
 
 	if err := config.Save(preferencesPath, config.Preferences{}); err != nil {
@@ -506,7 +506,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.width = 140
-	for _, key := range []string{"t", "A", "w", "s"} {
+	for _, key := range []string{"t", "A", "w", "s", "i", "m", "e"} {
 		updated, _ := m.Update(tea.KeyPressMsg{Text: key, Code: rune(key[0])})
 		m = updated.(Model)
 	}
@@ -514,7 +514,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FileLayout != "tree" || got.FileScope != "context" || !got.WideFiles || got.DiffView != "split" {
+	if got.FileLayout != "tree" || got.FileScope != "context" || !got.WideFiles || got.DiffView != "split" || !got.IgnoreWhitespace || !got.IgnoreMoved || !got.SemanticReflow {
 		t.Fatalf("updated preferences were not persisted: %#v", got)
 	}
 }
@@ -731,7 +731,7 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 		{repo.Files[0].Lines[1], "+", [3]uint8{0x56, 0xd3, 0x64}, addedLineBackground, func(red, green, _ uint8) bool { return int(green)-int(red) >= 8 }},
 	}
 	for _, check := range checks {
-		rendered := m.renderUnifiedLine(0, check.line, 60)
+		rendered := m.renderUnifiedLine([]diff.Line{check.line}, 0, check.line, 60)
 		markerX := strings.Index(xansi.Strip(rendered), check.marker)
 		if markerX < 0 {
 			t.Fatalf("rendered row has no %q marker: %q", check.marker, xansi.Strip(rendered))
@@ -806,10 +806,10 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	lines := []diff.Line{
-		{Kind: diff.Addition, Text: "/**", NewNumber: 1},
-		{Kind: diff.Addition, Text: " * Record facts only", NewNumber: 2},
-		{Kind: diff.Addition, Text: " */", NewNumber: 3},
-		{Kind: diff.Addition, Text: "export const value = true", NewNumber: 4},
+		{Kind: diff.Addition, Text: "/**", NewNumber: 1, OriginalIndex: 0},
+		{Kind: diff.Addition, Text: " * Record facts only", NewNumber: 2, OriginalIndex: 1},
+		{Kind: diff.Addition, Text: " */", NewNumber: 3, OriginalIndex: 2},
+		{Kind: diff.Addition, Text: "export const value = true", NewNumber: 4, OriginalIndex: 3},
 	}
 	repo := &gitrepo.Repository{
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
@@ -823,7 +823,7 @@ func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
 	commentColour := styles.Get("github-dark").Get(chroma.CommentMultiline).Colour
 	want := [3]uint8{commentColour.Red(), commentColour.Green(), commentColour.Blue()}
 	for index := 0; index < 3; index++ {
-		rendered := m.renderUnifiedLine(index, lines[index], 80)
+		rendered := m.renderUnifiedLine(lines, index, lines[index], 80)
 		plain := xansi.Strip(rendered)
 		sourceColumn := strings.Index(plain, strings.TrimLeft(lines[index].Text, " "))
 		buffer := uv.NewScreenBuffer(80, 1)
@@ -833,7 +833,7 @@ func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
 			t.Fatalf("block comment line %d foreground = #%02x%02x%02x, want #%02x%02x%02x: %q", index+1, got[0], got[1], got[2], want[0], want[1], want[2], plain)
 		}
 	}
-	after := m.renderUnifiedLine(3, lines[3], 80)
+	after := m.renderUnifiedLine(lines, 3, lines[3], 80)
 	afterPlain := xansi.Strip(after)
 	afterColumn := strings.Index(afterPlain, "export")
 	afterBuffer := uv.NewScreenBuffer(80, 1)
@@ -852,6 +852,35 @@ func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
 	if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != want {
 		t.Fatalf("split block comment foreground = #%02x%02x%02x, want #%02x%02x%02x", got[0], got[1], got[2], want[0], want[1], want[2])
 	}
+}
+
+func TestSplitDiffIntralineHighlightIgnoresReformattedTernary(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	lines := []diff.Line{
+		{Kind: diff.Deletion, Hunk: 1, Text: "const effectiveLimit = isFullpage", OldNumber: 292, OriginalIndex: 0},
+		{Kind: diff.Deletion, Hunk: 1, Text: "  ? fullpageLimit", OldNumber: 293, OriginalIndex: 1},
+		{Kind: diff.Deletion, Hunk: 1, Text: "  : widgetSettings.widgetLimit;", OldNumber: 294, OriginalIndex: 2},
+		{Kind: diff.Addition, Hunk: 1, Text: "const effectiveLimit = isFullpage ? fullpageLimit : settings.config.limit;", NewNumber: 281, OriginalIndex: 3},
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "limits.ts", Additions: 1, Deletions: 3, Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = focusFiles
+	m.semanticReflow = true
+	const width = 180
+	rendered := m.renderSplit(width, 3)
+	plainLines := strings.Split(xansi.Strip(rendered), "\n")
+	buffer := uv.NewScreenBuffer(width, 3)
+	uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+
+	assertCellBackground(t, buffer.CellAt(strings.Index(plainLines[0], "const"), 0), deletedLineBackground)
+	assertCellBackground(t, buffer.CellAt(strings.Index(plainLines[0], "settings.config.limit"), 0), addedWordBackground)
+	assertCellBackground(t, buffer.CellAt(strings.Index(plainLines[2], "widgetSettings.widgetLimit"), 2), deletedWordBackground)
 }
 
 func TestFocusedFileRowUsesStrongSelectionBackground(t *testing.T) {
@@ -1043,7 +1072,7 @@ func TestUnifiedCursorUsesReservedGutterWithoutChangingRowWidth(t *testing.T) {
 	}
 	m.focus = focusDiff
 	const width = 60
-	rendered := m.renderUnifiedLine(0, repo.Files[0].Lines[0], width)
+	rendered := m.renderUnifiedLine(repo.Files[0].Lines, 0, repo.Files[0].Lines[0], width)
 	if got := lipgloss.Width(rendered); got != width {
 		t.Fatalf("selected row width = %d, want %d", got, width)
 	}

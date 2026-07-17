@@ -13,11 +13,14 @@ const Version = 1
 
 // Preferences contains display choices that follow a user across repositories.
 type Preferences struct {
-	Version    int    `json:"version"`
-	FileLayout string `json:"file_layout"`
-	FileScope  string `json:"file_scope"`
-	WideFiles  bool   `json:"wide_files"`
-	DiffView   string `json:"diff_view"`
+	Version          int    `json:"version"`
+	FileLayout       string `json:"file_layout"`
+	FileScope        string `json:"file_scope"`
+	WideFiles        bool   `json:"wide_files"`
+	DiffView         string `json:"diff_view"`
+	IgnoreWhitespace bool   `json:"ignore_whitespace,omitempty"`
+	IgnoreMoved      bool   `json:"ignore_moved,omitempty"`
+	SemanticReflow   bool   `json:"semantic_reflow_experimental,omitempty"`
 }
 
 // Defaults returns a complete, valid preference set.

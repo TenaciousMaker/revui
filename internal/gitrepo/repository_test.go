@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TenaciousMaker/revui/internal/diff"
 )
 
 func TestOpenIncludesCommittedWorkingAndUntrackedChanges(t *testing.T) {
@@ -53,6 +55,16 @@ func TestOpenIncludesCommittedWorkingAndUntrackedChanges(t *testing.T) {
 	content, fromBase, err := repo.ReadSource("app.go")
 	if err != nil || fromBase || !strings.Contains(string(content), "working tree") {
 		t.Fatalf("working source content=%q fromBase=%v err=%v", content, fromBase, err)
+	}
+	var appFile diff.File
+	for _, file := range repo.Files {
+		if file.Path == "app.go" {
+			appFile = file
+		}
+	}
+	oldSource, newSource, err := repo.ReadPairContext(context.Background(), appFile)
+	if err != nil || !strings.Contains(string(oldSource), `"main"`) || !strings.Contains(string(newSource), `"working tree"`) {
+		t.Fatalf("source pair old=%q new=%q err=%v", oldSource, newSource, err)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {

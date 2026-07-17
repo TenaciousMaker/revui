@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 
+	"github.com/TenaciousMaker/revui/internal/diff"
 	"github.com/TenaciousMaker/revui/internal/gitrepo"
 	"github.com/TenaciousMaker/revui/internal/watcher"
 )
@@ -13,6 +14,7 @@ type repositoryOperations interface {
 	Refresh(ctx context.Context, root, base string) (*gitrepo.Repository, error)
 	Search(ctx context.Context, snapshot *gitrepo.Repository, query string, contextLines int) ([]gitrepo.SearchMatch, error)
 	ReadSource(ctx context.Context, snapshot *gitrepo.Repository, path string) ([]byte, bool, error)
+	ReadPair(ctx context.Context, snapshot *gitrepo.Repository, file diff.File) ([]byte, []byte, error)
 }
 
 type gitRepositoryOperations struct{}
@@ -25,6 +27,9 @@ func (gitRepositoryOperations) Search(ctx context.Context, snapshot *gitrepo.Rep
 }
 func (gitRepositoryOperations) ReadSource(ctx context.Context, snapshot *gitrepo.Repository, path string) ([]byte, bool, error) {
 	return snapshot.ReadSourceContext(ctx, path)
+}
+func (gitRepositoryOperations) ReadPair(ctx context.Context, snapshot *gitrepo.Repository, file diff.File) ([]byte, []byte, error) {
+	return snapshot.ReadPairContext(ctx, file)
 }
 
 type watcherFactory interface {

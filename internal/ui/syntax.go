@@ -34,11 +34,11 @@ func (m Model) highlightLine(filename, source, background string) string {
 	return m.highlight.line(filename, source, background)
 }
 
-func (m Model) highlightDiffLine(index int, source, background string) string {
+func (m Model) highlightDiffLine(index int, source, background string, spans []textSpan) string {
 	if !m.theme.color || m.highlight == nil || m.repo == nil || m.file < 0 || m.file >= len(m.repo.Files) {
 		return source
 	}
-	return m.highlight.diffLine(&m.repo.Files[m.file], index, source, background)
+	return m.highlight.diffLine(&m.repo.Files[m.file], index, source, background, spans)
 }
 
 func (h *highlighter) line(filename, source, background string) string {
@@ -59,12 +59,12 @@ func (h *highlighter) line(filename, source, background string) string {
 	for token := iterator(); token != chroma.EOF; token = iterator() {
 		tokens = append(tokens, token)
 	}
-	result := styleSyntaxTokens(tokens, background, filename)
+	result := styleSyntaxTokens(tokens, background, filename, nil)
 	h.cache.Store(key, result)
 	return result
 }
 
-func (h *highlighter) diffLine(file *diff.File, index int, source, background string) string {
+func (h *highlighter) diffLine(file *diff.File, index int, source, background string, spans []textSpan) string {
 	if file == nil || index < 0 || index >= len(file.Lines) {
 		return h.line("", source, background)
 	}
@@ -82,7 +82,7 @@ func (h *highlighter) diffLine(file *diff.File, index int, source, background st
 	if len(tokens) == 0 {
 		return h.line(file.Path, source, background)
 	}
-	highlighted := styleSyntaxTokens(tokens, background, file.Path)
+	highlighted := styleSyntaxTokens(tokens, background, file.Path, spans)
 	width := xansi.StringWidth(source)
 	if xansi.StringWidth(highlighted) > width {
 		tail := ""
@@ -148,7 +148,7 @@ func tokeniseSyntaxSegment(filename string, lines []indexedSyntaxLine, destinati
 	}
 }
 
-func styleSyntaxTokens(tokens []chroma.Token, background, filename string) string {
+func styleSyntaxTokens(tokens []chroma.Token, background, filename string, spans []textSpan) string {
 	style := styles.Get("github-dark")
 	if style == nil {
 		var plain strings.Builder
@@ -160,6 +160,7 @@ func styleSyntaxTokens(tokens []chroma.Token, background, filename string) strin
 	backgroundColour := chroma.ParseColour(strings.TrimPrefix(background, "#"))
 	defaultColour := chroma.ParseColour("c9d1d9")
 	var output strings.Builder
+	position := 0
 	for _, token := range tokens {
 		entry := style.Get(token.Type)
 		if isMarkdownFilename(filename) && token.Type == chroma.Keyword {
@@ -171,30 +172,68 @@ func styleSyntaxTokens(tokens []chroma.Token, background, filename string) strin
 		if !foreground.IsSet() {
 			foreground = defaultColour
 		}
-		params := []string{"0"}
-		if entry.Bold == chroma.Yes {
-			params = append(params, "1")
+		value := []rune(strings.TrimRight(token.Value, "\r\n"))
+		for start := 0; start < len(value); {
+			emphasized := positionInSpans(position+start, spans)
+			end := start + 1
+			for end < len(value) && positionInSpans(position+end, spans) == emphasized {
+				end++
+			}
+			segmentBackground := backgroundColour
+			if emphasized {
+				segmentBackground = chroma.ParseColour(strings.TrimPrefix(intralineBackground(background), "#"))
+			}
+			writeSyntaxSegment(&output, entry, foreground, segmentBackground, string(value[start:end]))
+			start = end
 		}
-		if entry.Italic == chroma.Yes {
-			params = append(params, "3")
-		}
-		if entry.Underline == chroma.Yes {
-			params = append(params, "4")
-		}
-		params = append(params, rgbANSI("38", foreground))
-		if backgroundColour.IsSet() {
-			params = append(params, rgbANSI("48", backgroundColour))
-		}
-		output.WriteString("\x1b[")
-		output.WriteString(strings.Join(params, ";"))
-		output.WriteByte('m')
-		output.WriteString(strings.TrimRight(token.Value, "\r\n"))
+		position += len(value)
 	}
 	// Chroma may include the synthetic newline it uses to terminate a token
 	// stream in the final token value. Keep this line-oriented API strictly
 	// single-line so a highlighted source line cannot grow a rendered diff row.
 	result := strings.TrimRight(output.String(), "\r\n") + "\x1b[0m"
 	return result
+}
+
+func writeSyntaxSegment(output *strings.Builder, entry chroma.StyleEntry, foreground, background chroma.Colour, value string) {
+	params := []string{"0"}
+	if entry.Bold == chroma.Yes {
+		params = append(params, "1")
+	}
+	if entry.Italic == chroma.Yes {
+		params = append(params, "3")
+	}
+	if entry.Underline == chroma.Yes {
+		params = append(params, "4")
+	}
+	params = append(params, rgbANSI("38", foreground))
+	if background.IsSet() {
+		params = append(params, rgbANSI("48", background))
+	}
+	output.WriteString("\x1b[")
+	output.WriteString(strings.Join(params, ";"))
+	output.WriteByte('m')
+	output.WriteString(value)
+}
+
+func positionInSpans(position int, spans []textSpan) bool {
+	for _, span := range spans {
+		if position >= span.start && position < span.end {
+			return true
+		}
+	}
+	return false
+}
+
+func intralineBackground(background string) string {
+	switch background {
+	case addedLineBackground:
+		return addedWordBackground
+	case deletedLineBackground:
+		return deletedWordBackground
+	default:
+		return background
+	}
 }
 
 func isMarkdownFilename(filename string) bool {

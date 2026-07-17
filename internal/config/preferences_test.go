@@ -11,7 +11,7 @@ func TestSaveLoadAndDefaults(t *testing.T) {
 	if got, err := Load(path); err != nil || got != Defaults() {
 		t.Fatalf("missing preferences = %#v, %v", got, err)
 	}
-	want := Preferences{FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split"}
+	want := Preferences{FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split", IgnoreWhitespace: true, IgnoreMoved: true, SemanticReflow: true}
 	if err := Save(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,7 @@ func TestSaveLoadAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FileLayout != want.FileLayout || got.FileScope != want.FileScope || !got.WideFiles || got.DiffView != want.DiffView {
+	if got.FileLayout != want.FileLayout || got.FileScope != want.FileScope || !got.WideFiles || got.DiffView != want.DiffView || !got.IgnoreWhitespace || !got.IgnoreMoved || !got.SemanticReflow {
 		t.Fatalf("preferences = %#v, want %#v", got, want)
 	}
 }

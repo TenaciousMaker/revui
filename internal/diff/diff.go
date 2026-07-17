@@ -23,6 +23,9 @@ type Line struct {
 	OldNumber int      `json:"old_number,omitempty"`
 	NewNumber int      `json:"new_number,omitempty"`
 	Hunk      int      `json:"hunk"`
+	// OriginalIndex is assigned by the UI display cache after filtering. It is
+	// intentionally excluded from persisted snapshots and parser output.
+	OriginalIndex int `json:"-"`
 }
 
 type Hunk struct {

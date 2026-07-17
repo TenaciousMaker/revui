@@ -107,13 +107,42 @@ func TestHighlighterDoesNotAddALineForTrailingCommentTokens(t *testing.T) {
 	}
 }
 
+func TestDiffHighlighterEmphasizesOnlyChangedTokens(t *testing.T) {
+	var h highlighter
+	oldText := "from package import get_pool"
+	newText := "from package import get_pool, get_service_factory"
+	file := diff.File{Path: "imports.py", Lines: []diff.Line{
+		{Kind: diff.Deletion, Text: oldText, OldNumber: 1},
+		{Kind: diff.Addition, Text: newText, NewNumber: 1},
+	}}
+	_, spans := intralineChanges(oldText, newText)
+	highlighted := h.diffLine(&file, 1, newText, addedLineBackground, spans)
+	buffer := uv.NewScreenBuffer(len([]rune(newText)), 1)
+	uv.NewStyledString(highlighted).Draw(buffer, buffer.Bounds())
+
+	assertCellBackground(t, buffer.CellAt(strings.Index(newText, "from"), 0), addedLineBackground)
+	assertCellBackground(t, buffer.CellAt(strings.Index(newText, "get_service_factory"), 0), addedWordBackground)
+}
+
+func assertCellBackground(t *testing.T, cell *uv.Cell, want string) {
+	t.Helper()
+	if cell == nil || cell.Style.Bg == nil {
+		t.Fatal("rendered syntax cell has no background colour")
+	}
+	red, green, blue, _ := cell.Style.Bg.RGBA()
+	got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8)
+	if got != strings.ToUpper(want) {
+		t.Fatalf("cell background = %s, want %s", got, want)
+	}
+}
+
 func TestMarkdownStructuralMarkersUseMutedColour(t *testing.T) {
 	var h highlighter
 	file := diff.File{Path: "README.md", Lines: []diff.Line{
 		{Kind: diff.Addition, Text: "- **from the repository**", NewNumber: 1},
 		{Kind: diff.Addition, Text: "- **from a release archive**", NewNumber: 2},
 	}}
-	highlighted := h.diffLine(&file, 0, file.Lines[0].Text, addedLineBackground)
+	highlighted := h.diffLine(&file, 0, file.Lines[0].Text, addedLineBackground, nil)
 	if xansi.Strip(highlighted) != file.Lines[0].Text {
 		t.Fatalf("highlighted markdown changed text: %q", xansi.Strip(highlighted))
 	}

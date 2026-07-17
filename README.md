@@ -61,6 +61,7 @@ The watcher refreshes the review after save bursts without moving your current f
 - **One coherent branch view.** Merge-base comparison plus committed and working-tree changes.
 - **Review in context.** Toggle changed files, their sibling context, or the entire non-ignored repository tree.
 - **Diff or source.** Switch between unified/split diffs and the complete working or base file.
+- **Signal controls.** Emphasize changed words inside replacement lines, hide whitespace-only edits, and suppress lines that were only moved within a file.
 - **Repository search.** See grouped context around literal matches and jump directly to a source line.
 - **Durable progress.** Reviewed files stay reviewed until their diff fingerprint changes.
 - **Location-rich copy.** Keyboard ranges and pane-constrained mouse selections copy clean code with branch/base line locations.
@@ -83,6 +84,9 @@ The watcher refreshes the review after save bursts without moving your current f
 | `/` | Fuzzy-jump to a changed file |
 | `f` | Search text across the repository |
 | `o` | Toggle complete source and diff |
+| `i` | Toggle whitespace-only changes |
+| `m` | Toggle moved lines |
+| `e` | Toggle experimental semantic highlighting |
 | `v`, then move | Define a code range |
 | `y` | Copy the current line or selected range with location |
 | `[` / `]` | Jump to the previous or next hunk |
@@ -106,7 +110,11 @@ Global display preferences use the operating system's user configuration directo
 - macOS: `~/Library/Application Support/revui/preferences.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/revui/preferences.json`
 
-Flat/tree layout, file scope, pane width, and unified/split mode follow you across repositories. Cursor positions and expanded folders are temporary.
+Flat/tree layout, file scope, pane width, unified/split mode, whitespace/moved-line filters, and experimental semantic highlighting follow you across repositories. Cursor positions and expanded folders are temporary.
+
+Experimental semantic highlighting (`e`) compares complete old and new source instead of pairing Git lines. The diff header reports the active engine: `AST` uses Tree-sitter for TypeScript/TSX, `TOKEN*` is the language-neutral fallback, and `SEM…` means analysis is still running. This makes formatter-driven wrapping and spacing visually quiet while emphasizing the tokens that actually changed. The feature is deliberately opt-in: unsupported or temporarily invalid syntax falls back safely to tokens, and standard intraline highlighting remains available by toggling it off.
+
+Tree-sitter support is compiled into normal CGO-enabled source builds and `go install` builds. Static release archives use the portable token fallback. Semantic analysis runs locally, is cancellable, and is cached only in memory for the current process.
 
 Reviewed-file fingerprints live under the repository's Git metadata at `.git/revui`. revui adds nothing to the working tree and makes no network requests. Repository search uses `git grep` and respects Git ignore rules.
 

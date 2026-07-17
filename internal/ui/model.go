@@ -14,6 +14,7 @@ import (
 	"github.com/TenaciousMaker/revui/internal/diff"
 	"github.com/TenaciousMaker/revui/internal/gitrepo"
 	"github.com/TenaciousMaker/revui/internal/review"
+	"github.com/TenaciousMaker/revui/internal/semantic"
 	"github.com/TenaciousMaker/revui/internal/watcher"
 )
 
@@ -89,6 +90,8 @@ type Model struct {
 	watchRefreshPending bool
 	renderVersion       uint64
 	renderCache         *renderCache
+	diffDisplay         *diffDisplayCache
+	semantic            semanticAnalysisState
 }
 
 func New(repo *gitrepo.Repository) (Model, error) {
@@ -118,6 +121,8 @@ func newModel(repo *gitrepo.Repository, preferences preferenceStore, reviews rev
 		contentPaneState: contentPaneState{view: unified, selectFrom: -1},
 		filePaneState:    filePaneState{collapsed: map[string]bool{}},
 		renderCache:      &renderCache{},
+		diffDisplay:      &diffDisplayCache{},
+		semantic:         semanticAnalysisState{analyzer: semantic.New(32), file: -1},
 		preferencesPath:  preferencesPath,
 	}
 	m.applyPreferences(loadedPreferences)
@@ -166,13 +171,14 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureRepositorySearchVisible()
 		}
 		m.ensureVisible()
-		return m, nil
+		return m, m.ensureSemanticAnalysis()
 	case tea.MouseWheelMsg:
 		return m.queueMouseWheel(msg)
 	case mouseWheelFrameMsg:
 		return m.flushMouseWheel(), nil
 	case tea.MouseClickMsg:
-		return m.handleMouseClick(msg), nil
+		m = m.handleMouseClick(msg)
+		return m, m.ensureSemanticAnalysis()
 	case tea.MouseMotionMsg:
 		return m.handleMouseMotion(msg), nil
 	case tea.MouseReleaseMsg:
@@ -211,6 +217,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.refreshCmd(true)
 			}
 		}
+		return m, m.ensureSemanticAnalysis()
+	case semanticResultMsg:
+		m.applySemanticResult(msg)
 		return m, nil
 	case repositorySearchMsg:
 		if m.mode != searchingRepository || !m.repoSearching || msg.query != m.input || msg.id != m.searchID {
@@ -240,7 +249,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		return m.handlePaste(msg.Content)
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		updated, cmd := m.handleKey(msg)
+		next, ok := updated.(Model)
+		if !ok || msg.String() == "q" || msg.String() == "ctrl+c" {
+			return updated, cmd
+		}
+		return next, batchCommands(cmd, next.ensureSemanticAnalysis())
 	}
 	return m, nil
 }
@@ -395,6 +409,33 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Unified diff view."
 		}
 		m.persistPreferences()
+	case "i":
+		m.ignoreWhitespace = !m.ignoreWhitespace
+		m.resetLineCursor()
+		if m.ignoreWhitespace {
+			m.status = "Ignoring whitespace-only changes."
+		} else {
+			m.status = "Showing whitespace changes."
+		}
+		m.persistPreferences()
+	case "m":
+		m.ignoreMoved = !m.ignoreMoved
+		m.resetLineCursor()
+		if m.ignoreMoved {
+			m.status = "Hiding moved lines."
+		} else {
+			m.status = "Showing moved lines."
+		}
+		m.persistPreferences()
+	case "e":
+		m.semanticReflow = !m.semanticReflow
+		m.resetLineCursor()
+		if m.semanticReflow {
+			m.status = "Experimental semantic highlighting enabled; analyzing source."
+		} else {
+			m.status = "Standard intraline highlighting enabled."
+		}
+		m.persistPreferences()
 	case "]":
 		m.jumpHunk(1)
 	case "[":
@@ -500,7 +541,24 @@ func (m Model) currentLines() []diff.Line {
 	if m.file < 0 || m.file >= len(m.repo.Files) {
 		return nil
 	}
-	return m.repo.Files[m.file].Lines
+	if m.diffDisplay == nil {
+		return buildVisibleDiffLines(m.repo.Files[m.file].Lines, m.ignoreWhitespace, m.ignoreMoved)
+	}
+	return m.diffDisplay.linesFor(m.repo, m.file, m.ignoreWhitespace, m.ignoreMoved)
+}
+
+func (m Model) currentIntralineSpans() map[int][]textSpan {
+	if m.file < 0 || m.file >= len(m.repo.Files) {
+		return nil
+	}
+	lines := m.currentLines()
+	if spans := m.semanticSpansForVisibleLines(lines); spans != nil {
+		return spans
+	}
+	if m.diffDisplay == nil {
+		return buildIntralineSpanSet(lines, m.semanticReflow)
+	}
+	return m.diffDisplay.intralineFor(m.repo, m.file, m.ignoreWhitespace, m.ignoreMoved, m.semanticReflow)
 }
 
 func (m Model) currentSplitRows() []splitRow { return splitRows(m.currentLines()) }
@@ -817,20 +875,20 @@ func (m *Model) jumpHunk(direction int) {
 	if m.file >= len(m.repo.Files) {
 		return
 	}
-	hunks := m.repo.Files[m.file].Hunks
+	lines := m.currentLines()
 	if direction > 0 {
-		for _, hunk := range hunks {
-			if hunk.Start > m.line {
-				m.line = hunk.Start
+		for index, line := range lines {
+			if line.Kind == diff.Meta && index > m.line {
+				m.line = index
 				m.syncSplitCursorToLine()
 				m.ensureVisible()
 				return
 			}
 		}
 	} else {
-		for i := len(hunks) - 1; i >= 0; i-- {
-			if hunks[i].Start < m.line {
-				m.line = hunks[i].Start
+		for index := len(lines) - 1; index >= 0; index-- {
+			if lines[index].Kind == diff.Meta && index < m.line {
+				m.line = index
 				m.syncSplitCursorToLine()
 				m.ensureVisible()
 				return
@@ -859,14 +917,20 @@ func (m *Model) applyPreferences(preferences config.Preferences) {
 	if preferences.DiffView == "split" {
 		m.view = split
 	}
+	m.ignoreWhitespace = preferences.IgnoreWhitespace
+	m.ignoreMoved = preferences.IgnoreMoved
+	m.semanticReflow = preferences.SemanticReflow
 }
 
 func (m *Model) persistPreferences() {
 	preferences := config.Preferences{
-		FileLayout: "flat",
-		FileScope:  "changed",
-		WideFiles:  m.wideFiles,
-		DiffView:   "unified",
+		FileLayout:       "flat",
+		FileScope:        "changed",
+		WideFiles:        m.wideFiles,
+		DiffView:         "unified",
+		IgnoreWhitespace: m.ignoreWhitespace,
+		IgnoreMoved:      m.ignoreMoved,
+		SemanticReflow:   m.semanticReflow,
 	}
 	if m.fileLayout == treeFiles {
 		preferences.FileLayout = "tree"
@@ -897,6 +961,7 @@ func (m Model) watchCmd() tea.Cmd {
 }
 
 func (m *Model) stopWatcher() {
+	m.cancelSemanticAnalysis()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 		m.refreshCancel = nil
@@ -908,6 +973,23 @@ func (m *Model) stopWatcher() {
 	if m.watcher != nil {
 		_ = m.watcher.Close()
 		m.watcher = nil
+	}
+}
+
+func batchCommands(commands ...tea.Cmd) tea.Cmd {
+	var nonNil []tea.Cmd
+	for _, command := range commands {
+		if command != nil {
+			nonNil = append(nonNil, command)
+		}
+	}
+	switch len(nonNil) {
+	case 0:
+		return nil
+	case 1:
+		return nonNil[0]
+	default:
+		return tea.Batch(nonNil...)
 	}
 }
 

@@ -149,6 +149,36 @@ func (r *Repository) ReadSourceContext(ctx context.Context, path string) (conten
 	return []byte(output), true, nil
 }
 
+// ReadPairContext returns the merge-base and working-tree versions of a
+// changed file. Added and deleted sides are represented by empty content.
+func (r *Repository) ReadPairContext(ctx context.Context, file diff.File) (oldSource, newSource []byte, err error) {
+	if file.Binary {
+		return nil, nil, fmt.Errorf("%s is binary", file.Path)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if file.Status != "A" {
+		oldPath := file.OldPath
+		if oldPath == "" {
+			oldPath = file.Path
+		}
+		output, showErr := git(ctx, r.commandRunner(), r.Root, "show", r.MergeBase+":"+oldPath)
+		if showErr != nil {
+			return nil, nil, fmt.Errorf("read base source %s: %w", oldPath, showErr)
+		}
+		oldSource = []byte(output)
+	}
+	if file.Status != "D" {
+		content, readErr := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(file.Path)))
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("read working source %s: %w", file.Path, readErr)
+		}
+		newSource = content
+	}
+	return oldSource, newSource, nil
+}
+
 func detectBase(ctx context.Context, runner Runner, root string) string {
 	if ref, err := git(ctx, runner, root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		return strings.TrimSpace(ref)
