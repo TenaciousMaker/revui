@@ -7,15 +7,38 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/styles"
+	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/TenaciousMaker/revui/internal/diff"
 )
 
-type highlighter struct{ cache sync.Map }
+type highlighter struct {
+	cache         sync.Map
+	diffDocuments sync.Map
+}
+
+type indexedSyntaxLine struct {
+	index int
+	text  string
+}
+
+type diffSyntaxDocument struct {
+	oldLines map[int][]chroma.Token
+	newLines map[int][]chroma.Token
+}
 
 func (m Model) highlightLine(filename, source, background string) string {
 	if !m.theme.color || m.highlight == nil {
 		return source
 	}
 	return m.highlight.line(filename, source, background)
+}
+
+func (m Model) highlightDiffLine(index int, source, background string) string {
+	if !m.theme.color || m.highlight == nil || m.repo == nil || m.file < 0 || m.file >= len(m.repo.Files) {
+		return source
+	}
+	return m.highlight.diffLine(&m.repo.Files[m.file], index, source, background)
 }
 
 func (h *highlighter) line(filename, source, background string) string {
@@ -28,20 +51,122 @@ func (h *highlighter) line(filename, source, background string) string {
 	}
 	lexer := lexerForFilename(filename)
 	lexer = chroma.Coalesce(lexer)
-	iterator, err := lexer.Tokenise(nil, source)
+	iterator, err := lexer.Tokenise(nil, source+"\n")
 	if err != nil {
 		return source
 	}
+	var tokens []chroma.Token
+	for token := iterator(); token != chroma.EOF; token = iterator() {
+		tokens = append(tokens, token)
+	}
+	result := styleSyntaxTokens(tokens, background, filename)
+	h.cache.Store(key, result)
+	return result
+}
+
+func (h *highlighter) diffLine(file *diff.File, index int, source, background string) string {
+	if file == nil || index < 0 || index >= len(file.Lines) {
+		return h.line("", source, background)
+	}
+	cached, ok := h.diffDocuments.Load(file)
+	if !ok {
+		document := buildDiffSyntaxDocument(file)
+		cached, _ = h.diffDocuments.LoadOrStore(file, document)
+	}
+	document := cached.(*diffSyntaxDocument)
+	line := file.Lines[index]
+	tokens := document.newLines[index]
+	if line.Kind == diff.Deletion {
+		tokens = document.oldLines[index]
+	}
+	if len(tokens) == 0 {
+		return h.line(file.Path, source, background)
+	}
+	highlighted := styleSyntaxTokens(tokens, background, file.Path)
+	width := xansi.StringWidth(source)
+	if xansi.StringWidth(highlighted) > width {
+		tail := ""
+		if strings.HasSuffix(source, "…") {
+			tail = "…"
+		}
+		highlighted = xansi.Truncate(highlighted, width, tail)
+	}
+	return highlighted
+}
+
+func buildDiffSyntaxDocument(file *diff.File) *diffSyntaxDocument {
+	document := &diffSyntaxDocument{oldLines: map[int][]chroma.Token{}, newLines: map[int][]chroma.Token{}}
+	var oldSegment, newSegment []indexedSyntaxLine
+	flush := func() {
+		tokeniseSyntaxSegment(file.Path, oldSegment, document.oldLines)
+		tokeniseSyntaxSegment(file.Path, newSegment, document.newLines)
+		oldSegment = nil
+		newSegment = nil
+	}
+	for index, line := range file.Lines {
+		if line.Kind == diff.Meta {
+			flush()
+			continue
+		}
+		text := expandTabs(line.Text)
+		if line.Kind != diff.Addition {
+			oldSegment = append(oldSegment, indexedSyntaxLine{index: index, text: text})
+		}
+		if line.Kind != diff.Deletion {
+			newSegment = append(newSegment, indexedSyntaxLine{index: index, text: text})
+		}
+	}
+	flush()
+	return document
+}
+
+func tokeniseSyntaxSegment(filename string, lines []indexedSyntaxLine, destination map[int][]chroma.Token) {
+	if len(lines) == 0 {
+		return
+	}
+	sources := make([]string, len(lines))
+	for index, line := range lines {
+		sources[index] = line.text
+	}
+	lexer := chroma.Coalesce(lexerForFilename(filename))
+	iterator, err := lexer.Tokenise(nil, strings.Join(sources, "\n")+"\n")
+	if err != nil {
+		return
+	}
+	lineIndex := 0
+	for token := iterator(); token != chroma.EOF && lineIndex < len(lines); token = iterator() {
+		value := strings.ReplaceAll(strings.ReplaceAll(token.Value, "\r\n", "\n"), "\r", "\n")
+		parts := strings.Split(value, "\n")
+		for partIndex, part := range parts {
+			if part != "" && lineIndex < len(lines) {
+				destination[lines[lineIndex].index] = append(destination[lines[lineIndex].index], chroma.Token{Type: token.Type, Value: part})
+			}
+			if partIndex < len(parts)-1 {
+				lineIndex++
+			}
+		}
+	}
+}
+
+func styleSyntaxTokens(tokens []chroma.Token, background, filename string) string {
 	style := styles.Get("github-dark")
 	if style == nil {
-		return source
+		var plain strings.Builder
+		for _, token := range tokens {
+			plain.WriteString(token.Value)
+		}
+		return plain.String()
 	}
-
 	backgroundColour := chroma.ParseColour(strings.TrimPrefix(background, "#"))
 	defaultColour := chroma.ParseColour("c9d1d9")
 	var output strings.Builder
-	for token := iterator(); token != chroma.EOF; token = iterator() {
+	for _, token := range tokens {
 		entry := style.Get(token.Type)
+		if isMarkdownFilename(filename) && token.Type == chroma.Keyword {
+			// Markdown uses Keyword for list, task, numbered-list, and quote
+			// markers. Keep structure legible without borrowing deletion red.
+			entry.Colour = chroma.ParseColour("8b949e")
+		}
 		foreground := entry.Colour
 		if !foreground.IsSet() {
 			foreground = defaultColour
@@ -63,12 +188,18 @@ func (h *highlighter) line(filename, source, background string) string {
 		output.WriteString("\x1b[")
 		output.WriteString(strings.Join(params, ";"))
 		output.WriteByte('m')
-		output.WriteString(token.Value)
+		output.WriteString(strings.TrimRight(token.Value, "\r\n"))
 	}
-	output.WriteString("\x1b[0m")
-	result := strings.TrimSuffix(output.String(), "\n")
-	h.cache.Store(key, result)
+	// Chroma may include the synthetic newline it uses to terminate a token
+	// stream in the final token value. Keep this line-oriented API strictly
+	// single-line so a highlighted source line cannot grow a rendered diff row.
+	result := strings.TrimRight(output.String(), "\r\n") + "\x1b[0m"
 	return result
+}
+
+func isMarkdownFilename(filename string) bool {
+	lower := strings.ToLower(filename)
+	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".mkd") || strings.HasSuffix(lower, ".markdown")
 }
 
 func rgbANSI(channel string, colour chroma.Colour) string {

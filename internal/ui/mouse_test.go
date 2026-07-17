@@ -490,6 +490,74 @@ func TestMouseSelectionStaysInsideOriginatingCodePane(t *testing.T) {
 	}
 }
 
+func TestSplitMouseSelectionStaysInsideOriginatingHalf(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "service.go", Lines: []diff.Line{
+			{Kind: diff.Deletion, Text: "old pane content", OldNumber: 1},
+			{Kind: diff.Addition, Text: "new pane content", NewNumber: 1},
+		}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus, m.view = 140, 20, focusDiff, split
+	plainLines := strings.Split(xansi.Strip(m.View().Content), "\n")
+	row, oldX, newX := -1, -1, -1
+	for y, content := range plainLines {
+		oldByte, newByte := strings.Index(content, "old pane content"), strings.Index(content, "new pane content")
+		if oldByte >= 0 && newByte >= 0 {
+			row = y
+			oldX = lipgloss.Width(content[:oldByte])
+			newX = lipgloss.Width(content[:newByte])
+			break
+		}
+	}
+	if row < 0 || oldX < m.filePaneWidth() || newX <= oldX {
+		t.Fatalf("could not locate split content: row=%d old=%d new=%d", row, oldX, newX)
+	}
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: newX + len("new pane content") - 1, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMotionMsg{X: oldX, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseReleaseMsg{X: oldX, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	if strings.Contains(m.selectedText, "old pane content") || !strings.Contains(m.selectedText, "new pane content") {
+		t.Fatalf("right-origin selection crossed the divider: %q", m.selectedText)
+	}
+	buffer := uv.NewScreenBuffer(m.width, m.height)
+	uv.NewStyledString(m.View().Content).Draw(buffer, buffer.Bounds())
+	if cellHasSelectionBackground(buffer.CellAt(oldX, row)) {
+		t.Fatal("right-origin selection background crossed into the left split pane")
+	}
+	if !cellHasSelectionBackground(buffer.CellAt(newX, row)) {
+		t.Fatal("right-origin selection did not highlight its own split pane")
+	}
+
+	m.clearMouseSelection()
+	m.invalidateRender()
+	updated, _ = m.Update(tea.MouseClickMsg{X: oldX, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMotionMsg{X: newX + len("new pane content") - 1, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseReleaseMsg{X: newX + len("new pane content") - 1, Y: row, Button: tea.MouseLeft})
+	m = updated.(Model)
+	if strings.Contains(m.selectedText, "new pane content") || !strings.Contains(m.selectedText, "old pane content") {
+		t.Fatalf("left-origin selection crossed the divider: %q", m.selectedText)
+	}
+	buffer = uv.NewScreenBuffer(m.width, m.height)
+	uv.NewStyledString(m.View().Content).Draw(buffer, buffer.Bounds())
+	if !cellHasSelectionBackground(buffer.CellAt(oldX, row)) {
+		t.Fatal("left-origin selection did not highlight its own split pane")
+	}
+	if cellHasSelectionBackground(buffer.CellAt(newX, row)) {
+		t.Fatal("left-origin selection background crossed into the right split pane")
+	}
+}
+
 func cellHasSelectionBackground(cell *uv.Cell) bool {
 	if cell == nil || cell.Style.Bg == nil {
 		return false

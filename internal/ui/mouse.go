@@ -173,7 +173,7 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) Model {
 	m.mouseSelectMoved = false
 	m.mouseSelectStart = point
 	m.mouseSelectEnd = point
-	m.mouseSelectLeft, m.mouseSelectRight = m.codePaneBounds()
+	m.mouseSelectLeft, m.mouseSelectRight = m.selectionPaneBounds(point.x)
 	m.selectedText = ""
 	return m
 }
@@ -335,6 +335,22 @@ func (m Model) codePaneBounds() (int, int) {
 		left = m.filePaneWidth()
 	}
 	return left, max(left, m.width)
+}
+
+func (m Model) selectionPaneBounds(originX int) (int, int) {
+	left, right := m.codePaneBounds()
+	if m.sourcePath != "" || m.view != split || right-left < 4 {
+		return left, right
+	}
+	// renderDiff reserves one cell of horizontal padding on each side before
+	// renderSplit divides its content around a one-cell separator.
+	contentWidth := right - left - 2
+	half := max(12, (contentWidth-1)/2)
+	divider := clamp(left+1+half, left, max(left, right-1))
+	if originX <= divider {
+		return left, divider
+	}
+	return min(right, divider+1), right
 }
 
 func (m *Model) clearMouseSelection() {

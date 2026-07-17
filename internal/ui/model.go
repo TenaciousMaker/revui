@@ -513,6 +513,7 @@ func (m Model) currentTreeNodes() []fileTreeNode {
 }
 
 func (m *Model) rebuildTreeNodes() {
+	m.rebuildFileCountWidths()
 	entries := scopedFileTreeEntries(m.repo.Files, m.repo.AllPaths, m.fileScope)
 	m.treeNodes = buildFileTreeEntries(entries, m.collapsed)
 	m.treeNodesReady = true
@@ -521,6 +522,19 @@ func (m *Model) rebuildTreeNodes() {
 	m.treeNodesPathCount = len(m.repo.AllPaths)
 	m.treeFileCount = len(entries)
 	m.treeRequiredWidth = m.requiredTreeWidth(m.treeNodes)
+}
+
+func (m *Model) rebuildFileCountWidths() {
+	m.additionsWidth = 0
+	m.deletionsWidth = 0
+	for _, file := range m.repo.Files {
+		if file.Additions > 0 {
+			m.additionsWidth = max(m.additionsWidth, len(fmt.Sprintf("+%d", file.Additions)))
+		}
+		if file.Deletions > 0 {
+			m.deletionsWidth = max(m.deletionsWidth, len(fmt.Sprintf("-%d", file.Deletions)))
+		}
+	}
 }
 
 func (m *Model) toggleFileLayout() {

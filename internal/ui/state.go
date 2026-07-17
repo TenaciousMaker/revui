@@ -21,6 +21,8 @@ type filePaneState struct {
 	treeNodesPathCount int
 	treeFileCount      int
 	treeRequiredWidth  int
+	additionsWidth     int
+	deletionsWidth     int
 	collapsed          map[string]bool
 }
 

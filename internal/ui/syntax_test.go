@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/alecthomas/chroma/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/TenaciousMaker/revui/internal/diff"
 )
 
 func TestLexerForSalesforceFileTypes(t *testing.T) {
@@ -87,6 +90,42 @@ func TestHighlighterPreservesDiffBackgroundAcrossTokens(t *testing.T) {
 		if !strings.Contains(strings.SplitN(segment, "m", 2)[0], "48;2;31;42;36") {
 			t.Fatalf("token is missing the added-line background: %q", segment)
 		}
+	}
+}
+
+func TestHighlighterDoesNotAddALineForTrailingCommentTokens(t *testing.T) {
+	var h highlighter
+	source := "// @vitest-environment jsdom"
+
+	got := h.line("example.test.tsx", source, addedLineBackground)
+
+	if strings.ContainsAny(got, "\r\n") {
+		t.Fatalf("highlighted line contains a line break: %q", got)
+	}
+	if stripped := xansi.Strip(got); stripped != source {
+		t.Fatalf("highlighted text = %q, want %q", stripped, source)
+	}
+}
+
+func TestMarkdownStructuralMarkersUseMutedColour(t *testing.T) {
+	var h highlighter
+	file := diff.File{Path: "README.md", Lines: []diff.Line{
+		{Kind: diff.Addition, Text: "- **from the repository**", NewNumber: 1},
+		{Kind: diff.Addition, Text: "- **from a release archive**", NewNumber: 2},
+	}}
+	highlighted := h.diffLine(&file, 0, file.Lines[0].Text, addedLineBackground)
+	if xansi.Strip(highlighted) != file.Lines[0].Text {
+		t.Fatalf("highlighted markdown changed text: %q", xansi.Strip(highlighted))
+	}
+	buffer := uv.NewScreenBuffer(32, 1)
+	uv.NewStyledString(highlighted).Draw(buffer, buffer.Bounds())
+	cell := buffer.CellAt(0, 0)
+	if cell == nil || cell.Style.Fg == nil {
+		t.Fatal("markdown list marker has no foreground colour")
+	}
+	red, green, blue, _ := cell.Style.Fg.RGBA()
+	if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != "#8B949E" {
+		t.Fatalf("markdown list marker colour = %s, want muted #8B949E", got)
 	}
 }
 

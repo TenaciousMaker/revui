@@ -75,11 +75,17 @@ func (m Model) renderHeader() string {
 	adds, dels := m.repo.Totals()
 	logo := m.theme.focus.Render(" REVUI ")
 	branch := m.theme.text.Bold(true).Render(m.repo.Branch) + m.theme.muted.Render("  →  "+m.repo.Base)
-	live := ""
-	if m.watcher != nil {
-		live = m.theme.addedText.Render("● live") + "  "
+	var statParts []string
+	if adds > 0 {
+		statParts = append(statParts, m.theme.addedText.Render(fmt.Sprintf("+%d", adds)))
 	}
-	stats := live + m.theme.addedText.Render(fmt.Sprintf("+%d", adds)) + "  " + m.theme.deletedText.Render(fmt.Sprintf("-%d", dels))
+	if dels > 0 {
+		statParts = append(statParts, m.theme.deletedText.Render(fmt.Sprintf("-%d", dels)))
+	}
+	if m.watcher != nil {
+		statParts = append(statParts, m.theme.liveText.Render("● live"))
+	}
+	stats := strings.Join(statParts, "  ")
 	gap := max(1, m.width-lipgloss.Width(logo)-lipgloss.Width(branch)-lipgloss.Width(stats)-4)
 	line := logo + "  " + branch + strings.Repeat(" ", gap) + stats
 	return m.theme.panel.Width(m.width).Height(2).Padding(0, 1).Render(line)
@@ -99,10 +105,24 @@ func (m Model) renderFiles(width, height int) string {
 	if m.wideFiles && m.width >= 90 {
 		layout += "  WIDE"
 	}
-	titleText := xansi.Truncate(fmt.Sprintf("FILES  %d  %s  %s", fileCount, layout, m.reviewedProgressText()), max(1, width-4), "…")
-	title := m.theme.muted.Render(titleText)
+	titleWidth := max(1, width-4)
+	section := fmt.Sprintf("FILES  %d", fileCount)
+	layoutText := "  " + layout
+	progressText := m.reviewedProgressText()
+	sectionStyle := m.theme.text.Bold(true)
 	if focused {
-		title = m.theme.focus.Render(titleText)
+		sectionStyle = m.theme.focus
+	}
+	sectionStyle = m.filePaneStyle(sectionStyle)
+	metadataStyle := m.filePaneStyle(m.theme.muted)
+	var title string
+	titlePartsWidth := lipgloss.Width(section) + lipgloss.Width(layoutText) + lipgloss.Width(progressText)
+	if titlePartsWidth+2 <= titleWidth {
+		gap := titleWidth - titlePartsWidth
+		title = sectionStyle.Render(section) + metadataStyle.Render(layoutText+strings.Repeat(" ", gap)+progressText)
+	} else {
+		metadata := xansi.Truncate(layoutText+"  "+progressText, max(1, titleWidth-lipgloss.Width(section)), "…")
+		title = sectionStyle.Render(section) + metadataStyle.Render(metadata)
 	}
 	lines := []string{title, ""}
 	if fileCount == 0 {
@@ -180,18 +200,30 @@ func (m Model) requiredTreeWidth(nodes []fileTreeNode) int {
 func (m Model) renderFlatFile(fileIndex int, selected, focused bool, width int) string {
 	file := m.repo.Files[fileIndex]
 	marker := m.statusMarker(file.Status)
+	plainMarker := file.Status
+	if plainMarker == "" {
+		plainMarker = "M"
+	}
 	reviewed := m.fileReviewed(fileIndex)
-	reviewMark := " "
+	reviewMark := m.theme.panel.Render(" ")
+	plainReviewMark := " "
 	if reviewed {
-		reviewMark = m.theme.addedText.Render("✓")
+		reviewMark = m.filePaneStyle(m.theme.addedText).Render("✓")
+		plainReviewMark = "✓"
 	}
 	countText := m.fileCountText(file)
 	nameWidth := max(6, width-lipgloss.Width(countText)-9)
-	row := " " + reviewMark + " " + marker + " " + shortPath(file.Path, nameWidth)
-	gap := max(1, width-4-lipgloss.Width(row)-lipgloss.Width(countText))
-	row += strings.Repeat(" ", gap) + countText
+	name := shortPath(file.Path, nameWidth)
+	nameStyle := m.filePaneStyle(m.statusStyle(file.Status))
+	row := m.theme.panel.Render(" ") + reviewMark + m.theme.panel.Render(" ") + marker + m.theme.panel.Render(" ") + nameStyle.Render(name)
+	gap := max(1, fileRowContentWidth(width)-lipgloss.Width(row)-lipgloss.Width(countText))
+	row += m.theme.panel.Render(strings.Repeat(" ", gap)) + countText
+	if selected && focused {
+		plainRow := " " + plainReviewMark + " " + plainMarker + " " + name
+		return m.renderSelectedFileRow(plainRow, &file, width)
+	}
 	if reviewed && !selected {
-		row = m.theme.muted.Render(xansi.Strip(row))
+		row = m.filePaneStyle(m.theme.muted).Render(xansi.Strip(row))
 	}
 	return m.styleFileRow(row, selected, focused, width)
 }
@@ -203,32 +235,51 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 		if m.collapsed[node.path] {
 			glyph = "▸"
 		}
-		row := " " + indent + m.theme.muted.Render(glyph) + " " + node.name
+		row := m.theme.panel.Render(" "+indent) + m.filePaneStyle(m.theme.muted).Render(glyph) + m.theme.panel.Render(" "+node.name)
+		if selected && focused {
+			return m.renderSelectedFileRow(" "+indent+glyph+" "+node.name, nil, width)
+		}
 		return m.styleFileRow(xansi.Truncate(row, max(1, width-2), "…"), selected, focused, width)
 	}
-	marker := m.theme.muted.Render("·")
-	reviewMark := " "
+	marker := m.filePaneStyle(m.theme.muted).Render("·")
+	plainMarker := "·"
+	reviewMark := m.theme.panel.Render(" ")
+	plainReviewMark := " "
 	reviewed := false
 	countText := ""
+	var selectedFile *diff.File
 	if node.fileIndex >= 0 {
 		file := m.repo.Files[node.fileIndex]
 		marker = m.statusMarker(file.Status)
+		plainMarker = file.Status
+		if plainMarker == "" {
+			plainMarker = "M"
+		}
 		countText = m.fileCountText(file)
 		reviewed = m.fileReviewed(node.fileIndex)
+		selectedFile = &file
 		if reviewed {
-			reviewMark = m.theme.addedText.Render("✓")
+			reviewMark = m.filePaneStyle(m.theme.addedText).Render("✓")
+			plainReviewMark = "✓"
 		}
 	}
 	nameWidth := max(4, width-lipgloss.Width(indent)-lipgloss.Width(countText)-9)
 	name := shortPath(node.name, nameWidth)
+	nameStyle := m.theme.panel
 	if node.fileIndex < 0 {
-		name = m.theme.muted.Render(name)
+		nameStyle = m.filePaneStyle(m.theme.muted)
+	} else {
+		nameStyle = m.filePaneStyle(m.statusStyle(m.repo.Files[node.fileIndex].Status))
 	}
-	row := " " + indent + reviewMark + " " + marker + " " + name
-	gap := max(1, width-4-lipgloss.Width(row)-lipgloss.Width(countText))
-	row += strings.Repeat(" ", gap) + countText
+	row := m.theme.panel.Render(" "+indent) + reviewMark + m.theme.panel.Render(" ") + marker + m.theme.panel.Render(" ") + nameStyle.Render(name)
+	gap := max(1, fileRowContentWidth(width)-lipgloss.Width(row)-lipgloss.Width(countText))
+	row += m.theme.panel.Render(strings.Repeat(" ", gap)) + countText
+	if selected && focused {
+		plainRow := " " + indent + plainReviewMark + " " + plainMarker + " " + xansi.Strip(name)
+		return m.renderSelectedFileRow(plainRow, selectedFile, width)
+	}
 	if reviewed && !selected {
-		row = m.theme.muted.Render(xansi.Strip(row))
+		row = m.filePaneStyle(m.theme.muted).Render(xansi.Strip(row))
 	}
 	return m.styleFileRow(row, selected, focused, width)
 }
@@ -252,25 +303,93 @@ func (m Model) reviewedProgressText() string {
 }
 
 func (m Model) styleFileRow(row string, selected, focused bool, width int) string {
-	row = xansi.Truncate(row, max(1, width-2), "")
+	contentWidth := fileRowContentWidth(width)
+	row = xansi.Truncate(row, contentWidth, "")
 	if !selected {
 		return row
 	}
 	if row == "" {
 		row = " "
 	}
-	style := m.theme.panel.Bold(true).Width(max(1, width-2)).MaxWidth(max(1, width-2))
+	style := m.theme.raised.Bold(true).Width(contentWidth).MaxWidth(contentWidth)
 	if focused {
-		style = m.theme.raised.Bold(true).Width(max(1, width-2)).MaxWidth(max(1, width-2))
-		if m.theme.color {
-			style = style.Foreground(lipgloss.Color("#FFFFFF"))
-		}
+		style = m.theme.selected.Width(contentWidth).MaxWidth(contentWidth)
 	}
-	return style.Render("›" + row[1:])
+	return style.Render(xansi.Strip(row))
+}
+
+func (m Model) filePaneStyle(style lipgloss.Style) lipgloss.Style {
+	if !m.theme.color {
+		return style
+	}
+	return style.Background(lipgloss.Color(panelBackground))
+}
+
+func (m Model) renderSelectedFileRow(row string, file *diff.File, width int) string {
+	contentWidth := fileRowContentWidth(width)
+	if file == nil {
+		return m.theme.selected.Width(contentWidth).MaxWidth(contentWidth).Render(xansi.Truncate(row, contentWidth, "…"))
+	}
+	counts := m.renderFileCounts(*file, true)
+	row = xansi.Truncate(row, max(1, contentWidth-lipgloss.Width(counts)-1), "…")
+	gap := max(1, contentWidth-lipgloss.Width(row)-lipgloss.Width(counts))
+	return m.theme.selected.Render(row+strings.Repeat(" ", gap)) + counts
+}
+
+func fileRowContentWidth(width int) int {
+	// The file pane reserves two columns for horizontal padding and one for
+	// its right border. Every row state must target this same inner width.
+	return max(1, width-3)
 }
 
 func (m Model) fileCountText(file diff.File) string {
-	return fmt.Sprintf(" %s%d %s%d", m.theme.addedText.Render("+"), file.Additions, m.theme.deletedText.Render("-"), file.Deletions)
+	return m.renderFileCounts(file, false)
+}
+
+func (m Model) renderFileCounts(file diff.File, selected bool) string {
+	added := ""
+	if file.Additions > 0 {
+		added = fmt.Sprintf("+%d", file.Additions)
+	}
+	deleted := ""
+	if file.Deletions > 0 {
+		deleted = fmt.Sprintf("-%d", file.Deletions)
+	}
+	additionsWidth := max(len(added), m.additionsWidth)
+	deletionsWidth := max(len(deleted), m.deletionsWidth)
+	if additionsWidth == 0 && deletionsWidth == 0 {
+		return ""
+	}
+	spaceStyle := m.theme.panel
+	addedStyle := m.filePaneStyle(m.theme.addedText)
+	deletedStyle := m.filePaneStyle(m.theme.deletedText)
+	if selected {
+		spaceStyle = m.theme.selected
+		addedStyle = m.theme.selected
+		deletedStyle = m.theme.selected
+		if m.theme.color {
+			background := lipgloss.Color(selectedRowBackground)
+			addedStyle = m.theme.addedText.Background(background).Bold(true)
+			deletedStyle = m.theme.deletedText.Background(background).Bold(true)
+		}
+	}
+	result := spaceStyle.Render(" ")
+	if additionsWidth > 0 {
+		if added != "" {
+			result += addedStyle.Render(added)
+		}
+		result += spaceStyle.Render(strings.Repeat(" ", additionsWidth-len(added)))
+		if deletionsWidth > 0 {
+			result += spaceStyle.Render(" ")
+		}
+	}
+	if deletionsWidth > 0 {
+		if deleted != "" {
+			result += deletedStyle.Render(deleted)
+		}
+		result += spaceStyle.Render(strings.Repeat(" ", deletionsWidth-len(deleted)))
+	}
+	return result
 }
 
 func (m Model) renderDiff(width, height int) string {
@@ -287,20 +406,32 @@ func (m Model) renderDiff(width, height int) string {
 		}
 		pathText = m.sourcePath
 	}
-	titleText := "DIFF  " + mode
+	section := "DIFF"
+	variant := mode
 	if m.sourcePath != "" {
-		titleText = mode
+		section = "SOURCE"
+		variant = ""
+		if m.sourceFromBase {
+			variant = "BASE"
+		}
 	}
-	title := m.theme.muted.Render(titleText)
+	sectionStyle := m.theme.text.Bold(true)
 	if focused {
-		title = m.theme.focus.Render(titleText)
+		sectionStyle = m.theme.focus
+	}
+	title := sectionStyle.Render(section)
+	if variant != "" {
+		title += m.theme.muted.Render("  " + variant)
 	}
 	path := m.theme.text.Bold(true).Render(shortPath(pathText, max(10, width-lipgloss.Width(title)-6)))
 	line := title
 	if pathText != "" {
 		line += "  " + path
 	}
-	contentHeight := max(1, height-3)
+	// The title, spacer, and the panel's top and bottom padding consume four
+	// rows. Keep the viewport within the height promised to the app layout so
+	// it cannot displace the footer.
+	contentHeight := max(1, height-4)
 	var code string
 	if m.sourcePath != "" {
 		code = m.renderSource(width-2, contentHeight)
@@ -339,12 +470,16 @@ func (m Model) renderUnifiedLine(index int, line diff.Line, width int) string {
 	if ranged {
 		selectionMark = m.theme.focus.Render("│")
 	}
+	if selected {
+		selectionMark = m.theme.focus.Render("▌")
+	}
 	oldNo, newNo := number(line.OldNumber), number(line.NewNumber)
-	prefix := fmt.Sprintf("%s %4s %4s ", selectionMark, oldNo, newNo) + m.renderDiffMarker(line.Kind) + " "
+	gutter := fmt.Sprintf(" %4s %4s %s ", oldNo, newNo, line.Kind.Marker())
+	prefix := selectionMark + m.renderDiffGutter(gutter, line.Kind)
 	contentWidth := max(1, width-lipgloss.Width(prefix))
 	source := truncatePlain(expandTabs(line.Text), contentWidth)
 	if line.Kind != diff.Meta {
-		source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
+		source = m.highlightDiffLine(index, source, syntaxBackground(line.Kind))
 	}
 	row := prefix + source
 	style := m.theme.canvas.Width(width)
@@ -357,10 +492,7 @@ func (m Model) renderUnifiedLine(index int, line diff.Line, width int) string {
 		style = m.theme.hunk.Width(width)
 	}
 	if selected {
-		style = style.Bold(true).BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).PaddingLeft(0)
-		if m.theme.color {
-			style = style.BorderForeground(lipgloss.Color("#58A6FF"))
-		}
+		style = style.Bold(true)
 	}
 	return style.Render(row)
 }
@@ -453,8 +585,8 @@ func (m Model) renderSplit(width, height int) string {
 			out = append(out, m.theme.hunk.Width(width).MaxWidth(width).Render(content))
 			continue
 		}
-		left := m.renderSplitCell(row.old, half, selected, true)
-		right := m.renderSplitCell(row.new, width-half-1, selected, false)
+		left := m.renderSplitCellAt(row.old, row.oldIndex, half, selected, true)
+		right := m.renderSplitCellAt(row.new, row.newIndex, width-half-1, selected, false)
 		divider := m.theme.border.Render("│")
 		if selected {
 			divider = m.theme.focus.Render("│")
@@ -465,21 +597,37 @@ func (m Model) renderSplit(width, height int) string {
 }
 
 func (m Model) renderSplitCell(line *diff.Line, width int, selected, left bool) string {
+	return m.renderSplitCellAt(line, -1, width, selected, left)
+}
+
+func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected, left bool) string {
 	marker := " "
 	if selected && left {
-		marker = m.theme.focus.Render("›")
+		marker = "›"
 	}
 	if line == nil {
-		return m.theme.panel.Width(width).MaxWidth(width).Render(marker)
+		markerStyle := m.theme.panel
+		if selected && left {
+			markerStyle = m.theme.focus
+			if m.theme.color {
+				markerStyle = markerStyle.Background(lipgloss.Color(panelBackground))
+			}
+		}
+		return markerStyle.Render(marker) + m.theme.panel.Render(strings.Repeat(" ", max(0, width-1)))
 	}
 	n := line.OldNumber
 	if line.Kind == diff.Addition {
 		n = line.NewNumber
 	}
-	prefix := marker + fmt.Sprintf("%3s ", number(n)) + m.renderDiffMarker(line.Kind) + " "
+	gutter := fmt.Sprintf("%3s %s ", number(n), line.Kind.Marker())
+	prefix := marker + m.renderDiffGutter(gutter, line.Kind)
 	contentWidth := max(1, width-lipgloss.Width(prefix))
 	source := xansi.Truncate(expandTabs(line.Text), contentWidth, "…")
-	source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
+	if lineIndex >= 0 {
+		source = m.highlightDiffLine(lineIndex, source, syntaxBackground(line.Kind))
+	} else {
+		source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
+	}
 	content := xansi.Truncate(prefix+source, width, "")
 	style := m.theme.canvas.Width(width).MaxWidth(width)
 	switch line.Kind {
@@ -505,20 +653,27 @@ func syntaxBackground(kind diff.LineKind) string {
 	}
 }
 
-func (m Model) renderDiffMarker(kind diff.LineKind) string {
+func (m Model) renderDiffGutter(text string, kind diff.LineKind) string {
+	if kind != diff.Addition && kind != diff.Deletion {
+		return text
+	}
+	return m.diffSemanticStyle(kind).Render(text)
+}
+
+func (m Model) diffSemanticStyle(kind diff.LineKind) lipgloss.Style {
 	switch kind {
 	case diff.Addition:
 		if !m.theme.color {
-			return m.theme.addedText.Render("+")
+			return m.theme.addedText.Bold(true)
 		}
-		return m.theme.addedText.Background(lipgloss.Color(addedLineBackground)).Bold(true).Render("+")
+		return m.theme.addedText.Background(lipgloss.Color(addedLineBackground)).Bold(true)
 	case diff.Deletion:
 		if !m.theme.color {
-			return m.theme.deletedText.Render("-")
+			return m.theme.deletedText.Bold(true)
 		}
-		return m.theme.deletedText.Background(lipgloss.Color(deletedLineBackground)).Bold(true).Render("-")
+		return m.theme.deletedText.Background(lipgloss.Color(deletedLineBackground)).Bold(true)
 	default:
-		return kind.Marker()
+		return lipgloss.NewStyle()
 	}
 }
 
@@ -607,21 +762,23 @@ func (m Model) modalLayout(foreground string, maxWidth, maxHeight int) (box stri
 }
 
 func (m Model) statusMarker(status string) string {
+	marker := status
+	if marker == "" {
+		marker = "M"
+	}
+	return m.filePaneStyle(m.statusStyle(status)).Render(marker)
+}
+
+func (m Model) statusStyle(status string) lipgloss.Style {
 	switch status {
 	case "A":
-		return m.theme.addedText.Render("A")
+		return m.theme.addedText
 	case "D":
-		return m.theme.deletedText.Render("D")
+		return m.theme.deletedText
 	case "R":
-		if !m.theme.color {
-			return "R"
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#D2A8FF")).Render("R")
+		return m.theme.renamedText
 	default:
-		if !m.theme.color {
-			return "M"
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#79C0FF")).Render("M")
+		return m.theme.modifiedText
 	}
 }
 func number(n int) string {

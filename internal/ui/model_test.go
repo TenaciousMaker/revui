@@ -10,6 +10,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/styles"
 	uv "github.com/charmbracelet/ultraviolet"
 	xansi "github.com/charmbracelet/x/ansi"
 
@@ -23,6 +25,14 @@ import (
 type stubRepositoryWatcher struct {
 	events chan watcher.Event
 	closed bool
+}
+
+func lastVisibleColumn(text, needle string) int {
+	index := strings.LastIndex(text, needle)
+	if index < 0 {
+		return -1
+	}
+	return lipgloss.Width(text[:index])
 }
 
 func (w *stubRepositoryWatcher) Events() <-chan watcher.Event { return w.events }
@@ -61,6 +71,36 @@ func TestResponsiveRenderAndFuzzySearch(t *testing.T) {
 	m.updateSearch()
 	if len(m.searchHits) != 1 || m.searchHits[0] != 0 {
 		t.Fatalf("unexpected fuzzy search hits: %#v", m.searchHits)
+	}
+}
+
+func TestHeaderPlacesPurpleLiveIndicatorAfterSolidCounts(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "service.go", Additions: 128, Deletions: 34}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width = 100
+	m.watcher = &stubRepositoryWatcher{events: make(chan watcher.Event)}
+	header := m.renderHeader()
+	plain := xansi.Strip(header)
+	countsAt, liveAt := strings.Index(plain, "+128  -34"), strings.Index(plain, "● live")
+	if countsAt < 0 || liveAt < 0 || liveAt < countsAt {
+		t.Fatalf("header stats are not ordered as counts then live: %q", plain)
+	}
+	buffer := uv.NewScreenBuffer(100, lipgloss.Height(header))
+	uv.NewStyledString(header).Draw(buffer, buffer.Bounds())
+	red, green, blue, _ := buffer.CellAt(liveAt, 0).Style.Fg.RGBA()
+	if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != "#D2A8FF" {
+		t.Fatalf("live indicator colour = %s, want #D2A8FF", got)
+	}
+	repo.Files[0].Deletions = 0
+	if zero := xansi.Strip(m.renderHeader()); strings.Contains(zero, "-0") {
+		t.Fatalf("header rendered a zero deletion count: %q", zero)
 	}
 }
 
@@ -681,13 +721,14 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 	m.focus = focusFiles
 
 	checks := []struct {
-		line       diff.Line
-		marker     string
-		foreground [3]uint8
-		background func(red, green, blue uint8) bool
+		line          diff.Line
+		marker        string
+		foreground    [3]uint8
+		backgroundHex string
+		background    func(red, green, blue uint8) bool
 	}{
-		{repo.Files[0].Lines[0], "-", [3]uint8{0xff, 0x7b, 0x72}, func(red, green, _ uint8) bool { return int(red)-int(green) >= 35 }},
-		{repo.Files[0].Lines[1], "+", [3]uint8{0x56, 0xd3, 0x64}, func(red, green, _ uint8) bool { return int(green)-int(red) >= 8 }},
+		{repo.Files[0].Lines[0], "-", [3]uint8{0xff, 0x7b, 0x72}, deletedLineBackground, func(red, green, _ uint8) bool { return int(red)-int(green) >= 35 }},
+		{repo.Files[0].Lines[1], "+", [3]uint8{0x56, 0xd3, 0x64}, addedLineBackground, func(red, green, _ uint8) bool { return int(green)-int(red) >= 8 }},
 	}
 	for _, check := range checks {
 		rendered := m.renderUnifiedLine(0, check.line, 60)
@@ -710,6 +751,22 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 		if !check.background(uint8(red>>8), uint8(green>>8), uint8(blue>>8)) {
 			t.Fatalf("marker %q background lacks semantic colour: #%02x%02x%02x", check.marker, red>>8, green>>8, blue>>8)
 		}
+		numberX := strings.Index(xansi.Strip(rendered), "10")
+		red, green, blue, _ = buffer.CellAt(numberX, 0).Style.Fg.RGBA()
+		if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != check.foreground {
+			t.Fatalf("unified %q line number foreground = #%02x%02x%02x", check.marker, got[0], got[1], got[2])
+		}
+		sourceX := strings.Index(xansi.Strip(rendered), check.line.Text)
+		for column := numberX; column < sourceX; column++ {
+			gutterCell := buffer.CellAt(column, 0)
+			if gutterCell == nil || gutterCell.Style.Bg == nil {
+				t.Fatalf("unified %q gutter column %d has no background", check.marker, column)
+			}
+			red, green, blue, _ = gutterCell.Style.Bg.RGBA()
+			if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != check.backgroundHex {
+				t.Fatalf("unified %q gutter column %d background = %s, want %s", check.marker, column, got, check.backgroundHex)
+			}
+		}
 
 		split := m.renderSplitCell(&check.line, 40, false, false)
 		splitMarkerX := strings.Index(xansi.Strip(split), check.marker)
@@ -727,6 +784,271 @@ func TestDiffRowsUseStrongSemanticMarkerAndBackgroundColours(t *testing.T) {
 		if !check.background(uint8(red>>8), uint8(green>>8), uint8(blue>>8)) {
 			t.Fatalf("split marker %q background lacks semantic colour: #%02x%02x%02x", check.marker, red>>8, green>>8, blue>>8)
 		}
+		splitNumberX := strings.Index(xansi.Strip(split), "10")
+		red, green, blue, _ = splitBuffer.CellAt(splitNumberX, 0).Style.Fg.RGBA()
+		if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != check.foreground {
+			t.Fatalf("split %q line number foreground = #%02x%02x%02x", check.marker, got[0], got[1], got[2])
+		}
+		splitSourceX := strings.Index(xansi.Strip(split), check.line.Text)
+		for column := splitNumberX; column < splitSourceX; column++ {
+			gutterCell := splitBuffer.CellAt(column, 0)
+			if gutterCell == nil || gutterCell.Style.Bg == nil {
+				t.Fatalf("split %q gutter column %d has no background", check.marker, column)
+			}
+			red, green, blue, _ = gutterCell.Style.Bg.RGBA()
+			if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != check.backgroundHex {
+				t.Fatalf("split %q gutter column %d background = %s, want %s", check.marker, column, got, check.backgroundHex)
+			}
+		}
+	}
+}
+
+func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	lines := []diff.Line{
+		{Kind: diff.Addition, Text: "/**", NewNumber: 1},
+		{Kind: diff.Addition, Text: " * Record facts only", NewNumber: 2},
+		{Kind: diff.Addition, Text: " */", NewNumber: 3},
+		{Kind: diff.Addition, Text: "export const value = true", NewNumber: 4},
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "schema.ts", Additions: len(lines), Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = focusFiles
+	commentColour := styles.Get("github-dark").Get(chroma.CommentMultiline).Colour
+	want := [3]uint8{commentColour.Red(), commentColour.Green(), commentColour.Blue()}
+	for index := 0; index < 3; index++ {
+		rendered := m.renderUnifiedLine(index, lines[index], 80)
+		plain := xansi.Strip(rendered)
+		sourceColumn := strings.Index(plain, strings.TrimLeft(lines[index].Text, " "))
+		buffer := uv.NewScreenBuffer(80, 1)
+		uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+		red, green, blue, _ := buffer.CellAt(sourceColumn, 0).Style.Fg.RGBA()
+		if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != want {
+			t.Fatalf("block comment line %d foreground = #%02x%02x%02x, want #%02x%02x%02x: %q", index+1, got[0], got[1], got[2], want[0], want[1], want[2], plain)
+		}
+	}
+	after := m.renderUnifiedLine(3, lines[3], 80)
+	afterPlain := xansi.Strip(after)
+	afterColumn := strings.Index(afterPlain, "export")
+	afterBuffer := uv.NewScreenBuffer(80, 1)
+	uv.NewStyledString(after).Draw(afterBuffer, afterBuffer.Bounds())
+	red, green, blue, _ := afterBuffer.CellAt(afterColumn, 0).Style.Fg.RGBA()
+	if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got == want {
+		t.Fatalf("code after block comment retained comment colour: %q", afterPlain)
+	}
+
+	split := m.renderSplit(80, 8)
+	splitRows := strings.Split(split, "\n")
+	splitColumn := strings.Index(xansi.Strip(splitRows[1]), "* Record")
+	splitBuffer := uv.NewScreenBuffer(80, len(splitRows))
+	uv.NewStyledString(split).Draw(splitBuffer, splitBuffer.Bounds())
+	red, green, blue, _ = splitBuffer.CellAt(splitColumn, 1).Style.Fg.RGBA()
+	if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != want {
+		t.Fatalf("split block comment foreground = #%02x%02x%02x, want #%02x%02x%02x", got[0], got[1], got[2], want[0], want[1], want[2])
+	}
+}
+
+func TestFocusedFileRowUsesStrongSelectionBackground(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "internal/review/session.go", Status: "M", Additions: 2, Deletions: 1}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = focusFiles
+	rendered := m.renderFlatFile(0, true, true, 48)
+	if got := lipgloss.Width(rendered); got != 45 {
+		t.Fatalf("focused row width = %d, want 45", got)
+	}
+	buffer := uv.NewScreenBuffer(48, 1)
+	uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+	for column := 0; column < 45; column++ {
+		cell := buffer.CellAt(column, 0)
+		if cell == nil || cell.Style.Bg == nil {
+			t.Fatalf("focused row column %d has no selection background: %q", column, rendered)
+		}
+		red, green, blue, _ := cell.Style.Bg.RGBA()
+		if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != selectedRowBackground {
+			t.Fatalf("focused row column %d background = %s, want %s", column, got, selectedRowBackground)
+		}
+	}
+}
+
+func TestFileRowHasUniformPanelAndFullyColouredCounts(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "internal/review/session.go", Status: "M", Additions: 18, Deletions: 4}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := m.renderFlatFile(0, false, false, 48)
+	plain := xansi.Strip(rendered)
+	buffer := uv.NewScreenBuffer(48, 1)
+	uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+	for column := 0; column < lipgloss.Width(rendered); column++ {
+		cell := buffer.CellAt(column, 0)
+		if cell == nil || cell.Style.Bg == nil {
+			t.Fatalf("file row column %d has no panel background: %q", column, rendered)
+		}
+		red, green, blue, _ := cell.Style.Bg.RGBA()
+		if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != panelBackground {
+			t.Fatalf("file row column %d background = %s, want %s", column, got, panelBackground)
+		}
+	}
+	for _, token := range []struct {
+		text string
+		rgb  [3]uint8
+	}{
+		{text: "+18", rgb: [3]uint8{0x56, 0xd3, 0x64}},
+		{text: "-4", rgb: [3]uint8{0xff, 0x7b, 0x72}},
+	} {
+		start := strings.Index(plain, token.text)
+		if start < 0 {
+			t.Fatalf("file row missing %q: %q", token.text, plain)
+		}
+		for column := start; column < start+len(token.text); column++ {
+			red, green, blue, _ := buffer.CellAt(column, 0).Style.Fg.RGBA()
+			if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != token.rgb {
+				t.Fatalf("%q column %d foreground = #%02x%02x%02x", token.text, column-start, got[0], got[1], got[2])
+			}
+		}
+	}
+}
+
+func TestFileNamesUseTheirGitStatusColour(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	files := []diff.File{
+		{Path: "added.go", Status: "A"},
+		{Path: "modified.go", Status: "M"},
+		{Path: "deleted.go", Status: "D"},
+		{Path: "renamed.go", Status: "R"},
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"), Files: files,
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"#56D364", "#79C0FF", "#FF7B72", "#D2A8FF"}
+	for index, file := range files {
+		rows := []string{
+			m.renderFlatFile(index, false, true, 48),
+			m.renderTreeNode(fileTreeNode{name: file.Path, fileIndex: index}, false, true, 48),
+		}
+		for _, row := range rows {
+			plain := xansi.Strip(row)
+			if strings.Contains(plain, "+0") || strings.Contains(plain, "-0") {
+				t.Fatalf("%s row rendered a zero count: %q", file.Status, plain)
+			}
+			column := strings.Index(plain, file.Path)
+			if column < 0 {
+				t.Fatalf("%s row is missing filename: %q", file.Status, plain)
+			}
+			buffer := uv.NewScreenBuffer(48, 1)
+			uv.NewStyledString(row).Draw(buffer, buffer.Bounds())
+			red, green, blue, _ := buffer.CellAt(column, 0).Style.Fg.RGBA()
+			if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != expected[index] {
+				t.Fatalf("%s filename colour = %s, want %s: %q", file.Status, got, expected[index], plain)
+			}
+		}
+	}
+}
+
+func TestFileCountsKeepTheirColumnsWhenRowIsSelected(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{
+			{Path: "create-list-widget-hook.test.tsx", Status: "A", Additions: 244},
+			{Path: "create-list-widget-hook.ts", Status: "A", Additions: 54},
+			{Path: "a.go", Status: "M", Additions: 7},
+		},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const width = 48
+	unselected := xansi.Strip(m.renderFlatFile(0, false, true, width))
+	selected := xansi.Strip(m.renderFlatFile(0, true, true, width))
+	for _, count := range []string{"+244"} {
+		unselectedColumn := strings.Index(unselected, count)
+		selectedColumn := strings.Index(selected, count)
+		if unselectedColumn < 0 || selectedColumn < 0 {
+			t.Fatalf("missing %q: unselected=%q selected=%q", count, unselected, selected)
+		}
+		if selectedColumn != unselectedColumn {
+			t.Fatalf("%q moved from column %d to %d when selected:\nunselected %q\nselected   %q", count, unselectedColumn, selectedColumn, unselected, selected)
+		}
+	}
+	if strings.Contains(selected, "-0") || strings.Contains(unselected, "-0") {
+		t.Fatalf("zero deletion count remained visible:\nunselected %q\nselected   %q", unselected, selected)
+	}
+	selectedTree := xansi.Strip(m.renderTreeNode(fileTreeNode{name: "create-list-widget-hook.test.tsx", depth: 4, fileIndex: 0}, true, true, width))
+	sameTreeUnselected := xansi.Strip(m.renderTreeNode(fileTreeNode{name: "create-list-widget-hook.test.tsx", depth: 4, fileIndex: 0}, false, true, width))
+	for _, marker := range []string{"+"} {
+		selectedColumn := lastVisibleColumn(selectedTree, marker)
+		unselectedColumn := lastVisibleColumn(sameTreeUnselected, marker)
+		if selectedColumn != unselectedColumn {
+			t.Fatalf("tree %q count moved from column %d to %d when the same row was selected:\nunselected %q\nselected   %q", marker, unselectedColumn, selectedColumn, sameTreeUnselected, selectedTree)
+		}
+	}
+	unselectedTree := xansi.Strip(m.renderTreeNode(fileTreeNode{name: "create-list-widget-hook.ts", depth: 4, fileIndex: 1}, false, true, width))
+	for _, marker := range []string{"+"} {
+		selectedColumn := lastVisibleColumn(selectedTree, marker)
+		unselectedColumn := lastVisibleColumn(unselectedTree, marker)
+		if selectedColumn != unselectedColumn {
+			t.Fatalf("tree %q count moved from column %d to %d when selected:\nunselected %q width=%d\nselected   %q width=%d", marker, unselectedColumn, selectedColumn, unselectedTree, lipgloss.Width(unselectedTree), selectedTree, lipgloss.Width(selectedTree))
+		}
+	}
+	for _, row := range []struct {
+		name       string
+		selected   string
+		unselected string
+	}{
+		{name: "flat short name", selected: xansi.Strip(m.renderFlatFile(2, true, true, width)), unselected: xansi.Strip(m.renderFlatFile(2, false, true, width))},
+		{name: "tree short name", selected: xansi.Strip(m.renderTreeNode(fileTreeNode{name: "a.go", depth: 1, fileIndex: 2}, true, true, width)), unselected: xansi.Strip(m.renderTreeNode(fileTreeNode{name: "a.go", depth: 1, fileIndex: 2}, false, true, width))},
+	} {
+		for _, marker := range []string{"+"} {
+			selectedColumn := lastVisibleColumn(row.selected, marker)
+			unselectedColumn := lastVisibleColumn(row.unselected, marker)
+			if selectedColumn != unselectedColumn {
+				t.Fatalf("%s %q count moved from column %d to %d when selected:\nunselected %q\nselected   %q", row.name, marker, unselectedColumn, selectedColumn, row.unselected, row.selected)
+			}
+		}
+	}
+}
+
+func TestUnifiedCursorUsesReservedGutterWithoutChangingRowWidth(t *testing.T) {
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "main.go", Lines: []diff.Line{{Kind: diff.Context, Text: "return value", OldNumber: 4, NewNumber: 4}}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = focusDiff
+	const width = 60
+	rendered := m.renderUnifiedLine(0, repo.Files[0].Lines[0], width)
+	if got := lipgloss.Width(rendered); got != width {
+		t.Fatalf("selected row width = %d, want %d", got, width)
+	}
+	if !strings.Contains(xansi.Strip(rendered), "▌") {
+		t.Fatalf("selected row has no gutter focus rail: %q", xansi.Strip(rendered))
 	}
 }
 
@@ -751,6 +1073,71 @@ func TestSplitRenderExpandsTabsWithoutWrappingRows(t *testing.T) {
 	output := m.renderSplit(78, 10)
 	if got := len(strings.Split(output, "\n")); got != 2 {
 		t.Fatalf("split row wrapped into %d lines:\n%s", got, output)
+	}
+}
+
+func TestAdditionOnlySplitRowsStayInsideViewport(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	lines := []diff.Line{{Kind: diff.Meta, Text: "@@ -0,0 +1,60 @@"}}
+	for line := 1; line <= 60; line++ {
+		text := "const value = true"
+		if line == 1 {
+			text = "// @vitest-environment jsdom"
+		}
+		lines = append(lines, diff.Line{Kind: diff.Addition, Text: text, NewNumber: line})
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "create-list-widget-hook.test.tsx", Additions: 60, Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus, m.view, m.width, m.height = focusDiff, split, 204, 60
+	m.line, m.splitCursor = 1, 1
+	const viewportWidth = 202
+	halfWidth := (viewportWidth - 1) / 2
+	leftCell := m.renderSplitCell(nil, halfWidth, true, true)
+	rightCell := m.renderSplitCell(&repo.Files[0].Lines[1], viewportWidth-halfWidth-1, true, false)
+	if strings.Contains(leftCell, "\n") || strings.Contains(rightCell, "\n") {
+		t.Fatalf("split cell wrapped internally: left=%d×%d right=%d×%d", lipgloss.Width(leftCell), lipgloss.Height(leftCell), lipgloss.Width(rightCell), lipgloss.Height(rightCell))
+	}
+	output := m.renderSplit(viewportWidth, 54)
+	rows := strings.Split(output, "\n")
+	if len(rows) != 54 {
+		var sample []string
+		for row := 0; row < min(5, len(rows)); row++ {
+			sample = append(sample, fmt.Sprintf("%d width=%d %q", row, lipgloss.Width(rows[row]), xansi.Strip(rows[row])))
+		}
+		t.Fatalf("addition-only split rendered %d logical rows, want 54:\n%s", len(rows), strings.Join(sample, "\n"))
+	}
+	for row, rendered := range rows {
+		if got := lipgloss.Width(rendered); got > viewportWidth {
+			t.Fatalf("addition-only split row %d crossed viewport: width %d, want <= %d", row, got, viewportWidth)
+		}
+	}
+	buffer := uv.NewScreenBuffer(viewportWidth, len(rows))
+	uv.NewStyledString(output).Draw(buffer, buffer.Bounds())
+	half := (viewportWidth - 1) / 2
+	for row := 1; row < len(rows); row++ {
+		for column := 0; column < half; column++ {
+			cell := buffer.CellAt(column, row)
+			if cell == nil || cell.Style.Bg == nil {
+				t.Fatalf("addition-only row %d left column %d has no neutral background", row, column)
+			}
+			red, green, blue, _ := cell.Style.Bg.RGBA()
+			if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got != panelBackground {
+				t.Fatalf("addition-only row %d bled into left column %d: background %s", row, column, got)
+			}
+		}
+	}
+	pane := m.renderDiff(204, 56)
+	if got := lipgloss.Width(pane); got > 204 {
+		t.Fatalf("split diff pane crossed viewport: width %d, want <= 204", got)
+	}
+	if got := lipgloss.Height(pane); got > 56 {
+		t.Fatalf("split diff pane crossed viewport: height %d, want <= 56", got)
 	}
 }
 
