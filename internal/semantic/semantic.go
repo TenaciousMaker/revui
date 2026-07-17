@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"sync"
 )
 
@@ -17,6 +18,8 @@ type Engine string
 const (
 	EngineToken Engine = "TOKEN*"
 	EngineAST   Engine = "AST"
+
+	maxSemanticSourceBytes = 2 << 20
 )
 
 type Range struct {
@@ -24,9 +27,63 @@ type Range struct {
 	End   int
 }
 
-type Move struct {
-	Old Range
-	New Range
+type Side uint8
+
+const (
+	OldSide Side = iota
+	NewSide
+)
+
+// ChangeKind describes the relationship between an old and new source range.
+// A zero range means that side does not exist (for example, an addition).
+type ChangeKind string
+
+const (
+	Unchanged ChangeKind = "unchanged"
+	Added     ChangeKind = "added"
+	Removed   ChangeKind = "removed"
+	Replaced  ChangeKind = "replaced"
+	Ignored   ChangeKind = "ignored"
+)
+
+// Correspondence is the layout-neutral output of semantic matching. Ranges
+// always address the original source buffers, even when a view inserts virtual
+// whitespace. Confidence is 0-100 and Role is parser-provided, when known.
+type Correspondence struct {
+	Old, New   Range
+	Kind       ChangeKind
+	Confidence uint8
+	Role       string
+}
+
+// VirtualLine is display-only source text with an origin range in the real
+// source. Synthetic whitespace may change Text, but non-whitespace tokens are
+// copied verbatim from [Start, End].
+type VirtualLine struct {
+	Text       string
+	Start, End int
+}
+
+// LayoutRow is a source-preserving visual correspondence. Old and New always
+// point into their original buffers; a nil side represents an insertion or
+// deletion. Kind is one of Unchanged, Added, Removed, or Replaced.
+type LayoutRow struct {
+	Old, New *VirtualLine
+	Kind     ChangeKind
+}
+
+// LayoutBlock is a confidently paired structural owner or a conservative
+// same-role one-to-many composite. Other ambiguous rewrites are absent so
+// callers render their literal diff.
+type LayoutBlock struct {
+	Old, New   Range
+	Rows       []LayoutRow
+	Confidence uint8
+	Role       string
+}
+
+type Layout struct {
+	Blocks []LayoutBlock
 }
 
 type Input struct {
@@ -36,14 +93,46 @@ type Input struct {
 }
 
 // Plan is an immutable semantic diff. Old and New are sorted, non-overlapping
-// byte ranges in their respective source buffers. Moves pair content that is
-// equal but changed position.
+// byte ranges in their respective source buffers. Matching is order-sensitive:
+// reordered syntax remains visible as removal and addition.
 type Plan struct {
-	Engine  Engine
-	Old     []Range
-	New     []Range
-	Moves   []Move
-	Warning string
+	Engine          Engine
+	Old             []Range
+	New             []Range
+	Correspondences []Correspondence
+	Layout          *Layout
+	Warning         string
+}
+
+// ChangedRanges projects the richer correspondence model for renderers that
+// only need emphasis spans. Old/New remain a compatibility fallback for plans
+// produced by older adapters or simple test fakes.
+func (p Plan) ChangedRanges(side Side) []Range {
+	if len(p.Correspondences) == 0 {
+		if side == OldSide {
+			return p.Old
+		}
+		return p.New
+	}
+	var ranges []Range
+	for _, pair := range p.Correspondences {
+		if pair.Kind != Removed && pair.Kind != Added && pair.Kind != Replaced {
+			continue
+		}
+		current := pair.New
+		if side == OldSide {
+			current = pair.Old
+		}
+		if current.End > current.Start {
+			ranges = append(ranges, current)
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Start < ranges[j].Start })
+	merged := ranges[:0]
+	for _, current := range ranges {
+		merged = appendRange(merged, current)
+	}
+	return merged
 }
 
 type Analyzer interface {
@@ -108,7 +197,7 @@ func (a *analyzer) Analyze(ctx context.Context, input Input) (Plan, error) {
 
 func inputKey(input Input) string {
 	hash := sha256.New()
-	hash.Write([]byte("semantic-v1\x00" + input.Path + "\x00"))
+	hash.Write([]byte("semantic-v3\x00" + input.Path + "\x00"))
 	hash.Write(input.Old)
 	hash.Write([]byte{0})
 	hash.Write(input.New)

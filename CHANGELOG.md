@@ -7,7 +7,8 @@ All notable changes to revui are documented here. The project follows [Semantic 
 ### Added
 
 - GitHub-like unified and split branch diffs with syntax highlighting.
-- Intraline change emphasis, optional whitespace-only and moved-line filtering, and experimental whole-source semantic highlighting with TypeScript/TSX Tree-sitter support and a universal token fallback.
+- Intraline change emphasis, optional raw-diff whitespace filtering, and experimental whitespace-insensitive whole-source semantic highlighting with order-sensitive TypeScript/TSX syntax-tree matching, bounded fallback, and a universal token engine.
+- Experimental normalized TypeScript/TSX split layout driven by confidence-scored semantic owner blocks, including exact JSX-subtree alignment across misleading Git context matches, with literal Git fallback for ambiguous rewrites.
 - Flat, tree, contextual, and all-files repository exploration.
 - Full-file source view, fuzzy file jump, and repository text search.
 - Reviewed-file fingerprints and user-wide display preferences.

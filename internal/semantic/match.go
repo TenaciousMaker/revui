@@ -1,45 +1,82 @@
 package semantic
 
+import "sort"
+
 type entry struct {
 	key        string
+	role       string
 	start, end int
 }
 
-func compareEntries(oldEntries, newEntries []entry) (oldRanges, newRanges []Range, moves []Move) {
+func compareEntries(oldEntries, newEntries []entry) (oldRanges, newRanges []Range) {
 	oldMatched, newMatched := matchEntries(oldEntries, newEntries)
-	deleted := make(map[string][]int)
-	for index, current := range oldEntries {
-		if !oldMatched[index] {
-			deleted[current.key] = append(deleted[current.key], index)
-		}
-	}
-	for newIndex, current := range newEntries {
-		if newMatched[newIndex] {
+	oldRanges, newRanges, _ = classifyEntries(oldEntries, newEntries, oldMatched, newMatched)
+	return oldRanges, newRanges
+}
+
+func compareEntriesDetailed(oldEntries, newEntries []entry) (oldRanges, newRanges []Range, pairs []Correspondence) {
+	oldMatched, newMatched := matchEntries(oldEntries, newEntries)
+	return classifyEntries(oldEntries, newEntries, oldMatched, newMatched)
+}
+
+func classifyEntries(oldEntries, newEntries []entry, oldMatched, newMatched []bool) (oldRanges, newRanges []Range, pairs []Correspondence) {
+	pairedOld, pairedNew := make([]bool, len(oldEntries)), make([]bool, len(newEntries))
+	for oldIndex, oldEntry := range oldEntries {
+		if oldMatched[oldIndex] {
 			continue
 		}
-		candidates := deleted[current.key]
-		if len(candidates) == 0 {
-			continue
+		best, bestDistance := -1, int(^uint(0)>>1)
+		for newIndex, newEntry := range newEntries {
+			if newMatched[newIndex] || pairedNew[newIndex] || oldEntry.role != newEntry.role {
+				continue
+			}
+			distance := oldIndex - newIndex
+			if distance < 0 {
+				distance = -distance
+			}
+			if distance < bestDistance {
+				best, bestDistance = newIndex, distance
+			}
 		}
-		oldIndex := candidates[0]
-		deleted[current.key] = candidates[1:]
-		oldMatched[oldIndex], newMatched[newIndex] = true, true
-		moves = append(moves, Move{
-			Old: Range{Start: oldEntries[oldIndex].start, End: oldEntries[oldIndex].end},
-			New: Range{Start: current.start, End: current.end},
-		})
+		if best >= 0 && bestDistance <= 8 {
+			pairedOld[oldIndex], pairedNew[best] = true, true
+			pairs = append(pairs, Correspondence{
+				Old:  Range{Start: oldEntry.start, End: oldEntry.end},
+				New:  Range{Start: newEntries[best].start, End: newEntries[best].end},
+				Kind: Replaced, Confidence: 70, Role: oldEntry.role,
+			})
+		}
 	}
 	for index, current := range oldEntries {
 		if !oldMatched[index] {
-			oldRanges = appendRange(oldRanges, Range{Start: current.start, End: current.end})
+			changed := Range{Start: current.start, End: current.end}
+			oldRanges = appendRange(oldRanges, changed)
+			if !pairedOld[index] {
+				pairs = append(pairs, Correspondence{Old: changed, Kind: Removed, Confidence: 100, Role: current.role})
+			}
 		}
 	}
 	for index, current := range newEntries {
 		if !newMatched[index] {
-			newRanges = appendRange(newRanges, Range{Start: current.start, End: current.end})
+			changed := Range{Start: current.start, End: current.end}
+			newRanges = appendRange(newRanges, changed)
+			if !pairedNew[index] {
+				pairs = append(pairs, Correspondence{New: changed, Kind: Added, Confidence: 100, Role: current.role})
+			}
 		}
 	}
-	return oldRanges, newRanges, moves
+	oldRanges = canonicalRanges(oldRanges)
+	newRanges = canonicalRanges(newRanges)
+	return oldRanges, newRanges, pairs
+}
+
+func canonicalRanges(ranges []Range) []Range {
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Start < ranges[j].Start })
+	result := ranges[:0]
+	for _, current := range ranges {
+		result = appendRange(result, current)
+	}
+	return result
 }
 
 func matchEntries(oldEntries, newEntries []entry) ([]bool, []bool) {
@@ -76,14 +113,16 @@ func matchSegment(oldEntries, newEntries []entry, oldStart, oldEnd, newStart, ne
 		for oldIndex := n - 1; oldIndex >= 0; oldIndex-- {
 			for newIndex := m - 1; newIndex >= 0; newIndex-- {
 				if oldEntries[oldStart+oldIndex].key == newEntries[newStart+newIndex].key {
-					table[oldIndex][newIndex] = table[oldIndex+1][newIndex+1] + 1
+					matched := table[oldIndex+1][newIndex+1] + entryMatchWeight(oldEntries[oldStart+oldIndex])
+					table[oldIndex][newIndex] = max(matched, max(table[oldIndex+1][newIndex], table[oldIndex][newIndex+1]))
 				} else {
 					table[oldIndex][newIndex] = max(table[oldIndex+1][newIndex], table[oldIndex][newIndex+1])
 				}
 			}
 		}
 		for oldIndex, newIndex := 0, 0; oldIndex < n && newIndex < m; {
-			if oldEntries[oldStart+oldIndex].key == newEntries[newStart+newIndex].key {
+			matched := table[oldIndex+1][newIndex+1] + entryMatchWeight(oldEntries[oldStart+oldIndex])
+			if oldEntries[oldStart+oldIndex].key == newEntries[newStart+newIndex].key && table[oldIndex][newIndex] == matched {
 				oldMatched[oldStart+oldIndex], newMatched[newStart+newIndex] = true, true
 				oldIndex++
 				newIndex++
@@ -96,6 +135,15 @@ func matchSegment(oldEntries, newEntries []entry, oldStart, oldEnd, newStart, ne
 		return
 	}
 	matchUniqueAnchors(oldEntries, newEntries, oldStart, oldEnd, newStart, newEnd, oldMatched, newMatched)
+}
+
+func entryMatchWeight(current entry) uint32 {
+	switch current.key {
+	case ",", ";", ".", "token\x00,", "token\x00;", "token\x00.":
+		return 1
+	default:
+		return 3
+	}
 }
 
 type anchor struct{ old, new int }

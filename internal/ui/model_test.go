@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/TenaciousMaker/revui/internal/diff"
 	"github.com/TenaciousMaker/revui/internal/gitrepo"
 	"github.com/TenaciousMaker/revui/internal/review"
+	"github.com/TenaciousMaker/revui/internal/semantic"
 	"github.com/TenaciousMaker/revui/internal/watcher"
 )
 
@@ -481,7 +483,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	root := t.TempDir()
 	preferencesPath := filepath.Join(root, "preferences.json")
 	if err := config.Save(preferencesPath, config.Preferences{
-		FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split", IgnoreWhitespace: true, IgnoreMoved: true, SemanticReflow: true,
+		FileLayout: "tree", FileScope: "all", WideFiles: true, DiffView: "split", IgnoreWhitespace: true, SemanticReflow: true, NormalizedLayout: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -494,8 +496,8 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.fileLayout != treeFiles || m.fileScope != allRepositoryFiles || !m.wideFiles || m.view != split || !m.ignoreWhitespace || !m.ignoreMoved || !m.semanticReflow {
-		t.Fatalf("preferences were not restored: layout=%v scope=%v wide=%v view=%v whitespace=%v moved=%v reflow=%v", m.fileLayout, m.fileScope, m.wideFiles, m.view, m.ignoreWhitespace, m.ignoreMoved, m.semanticReflow)
+	if m.fileLayout != treeFiles || m.fileScope != allRepositoryFiles || !m.wideFiles || m.view != split || !m.ignoreWhitespace || !m.semanticReflow || !m.normalizedLayout {
+		t.Fatalf("preferences were not restored: layout=%v scope=%v wide=%v view=%v whitespace=%v reflow=%v", m.fileLayout, m.fileScope, m.wideFiles, m.view, m.ignoreWhitespace, m.semanticReflow)
 	}
 
 	if err := config.Save(preferencesPath, config.Preferences{}); err != nil {
@@ -506,7 +508,7 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.width = 140
-	for _, key := range []string{"t", "A", "w", "s", "i", "m", "e"} {
+	for _, key := range []string{"t", "A", "w", "s", "i", "e", "n"} {
 		updated, _ := m.Update(tea.KeyPressMsg{Text: key, Code: rune(key[0])})
 		m = updated.(Model)
 	}
@@ -514,8 +516,36 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FileLayout != "tree" || got.FileScope != "context" || !got.WideFiles || got.DiffView != "split" || !got.IgnoreWhitespace || !got.IgnoreMoved || !got.SemanticReflow {
+	if got.FileLayout != "tree" || got.FileScope != "context" || !got.WideFiles || got.DiffView != "split" || !got.IgnoreWhitespace || !got.SemanticReflow || !got.NormalizedLayout {
 		t.Fatalf("updated preferences were not persisted: %#v", got)
+	}
+}
+
+func TestWhitespaceFilterAppliesOnlyToRawDiff(t *testing.T) {
+	lines := []diff.Line{
+		{Kind: diff.Meta, Text: "@@ -1 +1 @@", Hunk: 0},
+		{Kind: diff.Deletion, Text: "value = oldValue", OldNumber: 1, Hunk: 0},
+		{Kind: diff.Addition, Text: "value  =  oldValue", NewNumber: 1, Hunk: 0},
+	}
+	m := Model{repo: &gitrepo.Repository{Files: []diff.File{{Path: "value.go", Lines: lines}}}}
+	m.file = 0
+	m.ignoreWhitespace = true
+	if got := m.currentLines(); len(got) != 0 {
+		t.Fatalf("raw whitespace-only hunk remained visible: %#v", got)
+	}
+	m.semanticReflow = true
+	if got := m.currentLines(); len(got) != len(lines) {
+		t.Fatalf("semantic mode inherited the raw line filter: %#v", got)
+	}
+
+	m.ignoreWhitespace = false
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "i", Code: 'i'})
+	m = updated.(Model)
+	if m.ignoreWhitespace {
+		t.Fatal("semantic mode changed the stored raw whitespace preference")
+	}
+	if m.status != "Semantic mode already ignores formatting whitespace." {
+		t.Fatalf("semantic whitespace status = %q", m.status)
 	}
 }
 
@@ -851,6 +881,55 @@ func TestDiffSyntaxPreservesBlockCommentStateAcrossLines(t *testing.T) {
 	red, green, blue, _ = splitBuffer.CellAt(splitColumn, 1).Style.Fg.RGBA()
 	if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != want {
 		t.Fatalf("split block comment foreground = #%02x%02x%02x, want #%02x%02x%02x", got[0], got[1], got[2], want[0], want[1], want[2])
+	}
+}
+
+func TestNormalizedSplitPreservesBlockCommentStateAcrossVirtualLines(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	newSource := []byte("export interface Labels {\n  /**\n   * Resolved owner for the candidate; null when missing.\n   */\n  owner?: string | null;\n}\n")
+	plan, err := semantic.New(0).Analyze(context.Background(), semantic.Input{Path: "labels.ts", New: newSource})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Layout == nil {
+		t.Skip("normalized AST layout unavailable without cgo")
+	}
+	var lines []diff.Line
+	for index, text := range strings.Split(strings.TrimSuffix(string(newSource), "\n"), "\n") {
+		lines = append(lines, diff.Line{Kind: diff.Addition, Text: text, NewNumber: index + 1, Hunk: 0, OriginalIndex: index})
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "labels.ts", Additions: len(lines), Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus, m.view, m.semanticReflow, m.normalizedLayout = focusFiles, split, true, true
+	m.semantic.repo, m.semantic.file, m.semantic.ready, m.semantic.engine = repo, 0, true, semantic.EngineAST
+	m.semantic.layout, m.semantic.oldSource, m.semantic.newSource = plan.Layout, nil, newSource
+
+	const width = 180
+	rendered := m.renderSplit(width, 20)
+	plainRows := strings.Split(xansi.Strip(rendered), "\n")
+	row, column := -1, -1
+	for index, text := range plainRows {
+		if strings.Contains(text, "Resolved owner for") {
+			row, column = index, strings.Index(text, "for")
+			break
+		}
+	}
+	if row < 0 || column < 0 {
+		t.Fatalf("normalized block comment row missing:\n%s", xansi.Strip(rendered))
+	}
+	buffer := uv.NewScreenBuffer(width, len(plainRows))
+	uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+	commentColour := styles.Get("github-dark").Get(chroma.CommentMultiline).Colour
+	want := [3]uint8{commentColour.Red(), commentColour.Green(), commentColour.Blue()}
+	red, green, blue, _ := buffer.CellAt(column, row).Style.Fg.RGBA()
+	if got := [3]uint8{uint8(red >> 8), uint8(green >> 8), uint8(blue >> 8)}; got != want {
+		t.Fatalf("normalized comment keyword foreground = #%02x%02x%02x, want #%02x%02x%02x", got[0], got[1], got[2], want[0], want[1], want[2])
 	}
 }
 

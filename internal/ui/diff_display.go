@@ -15,27 +15,25 @@ type diffDisplayCache struct {
 	repo             *gitrepo.Repository
 	file             int
 	ignoreWhitespace bool
-	ignoreMoved      bool
 	lines            []diff.Line
 	intraline        map[int][]textSpan
 	semanticReflow   bool
 }
 
-func (c *diffDisplayCache) linesFor(repo *gitrepo.Repository, file int, ignoreWhitespace, ignoreMoved bool) []diff.Line {
-	if c.repo == repo && c.file == file && c.ignoreWhitespace == ignoreWhitespace && c.ignoreMoved == ignoreMoved {
+func (c *diffDisplayCache) linesFor(repo *gitrepo.Repository, file int, ignoreWhitespace bool) []diff.Line {
+	if c.repo == repo && c.file == file && c.ignoreWhitespace == ignoreWhitespace {
 		return c.lines
 	}
 	c.repo = repo
 	c.file = file
 	c.ignoreWhitespace = ignoreWhitespace
-	c.ignoreMoved = ignoreMoved
-	c.lines = buildVisibleDiffLines(repo.Files[file].Lines, ignoreWhitespace, ignoreMoved)
+	c.lines = buildVisibleDiffLines(repo.Files[file].Lines, ignoreWhitespace)
 	c.intraline = nil
 	return c.lines
 }
 
-func (c *diffDisplayCache) intralineFor(repo *gitrepo.Repository, file int, ignoreWhitespace, ignoreMoved, semanticReflow bool) map[int][]textSpan {
-	c.linesFor(repo, file, ignoreWhitespace, ignoreMoved)
+func (c *diffDisplayCache) intralineFor(repo *gitrepo.Repository, file int, ignoreWhitespace, semanticReflow bool) map[int][]textSpan {
+	c.linesFor(repo, file, ignoreWhitespace)
 	if c.intraline == nil || c.semanticReflow != semanticReflow {
 		c.semanticReflow = semanticReflow
 		c.intraline = buildIntralineSpanSet(c.lines, semanticReflow)
@@ -43,13 +41,10 @@ func (c *diffDisplayCache) intralineFor(repo *gitrepo.Repository, file int, igno
 	return c.intraline
 }
 
-func buildVisibleDiffLines(lines []diff.Line, ignoreWhitespace, ignoreMoved bool) []diff.Line {
+func buildVisibleDiffLines(lines []diff.Line, ignoreWhitespace bool) []diff.Line {
 	hidden := make([]bool, len(lines))
 	if ignoreWhitespace {
 		hideWhitespaceOnlyChanges(lines, hidden)
-	}
-	if ignoreMoved {
-		hideMovedLines(lines, hidden, ignoreWhitespace)
 	}
 
 	visibleHunks := map[int]bool{}
@@ -67,7 +62,7 @@ func buildVisibleDiffLines(lines []diff.Line, ignoreWhitespace, ignoreMoved bool
 		if hidden[index] {
 			continue
 		}
-		if (ignoreWhitespace || ignoreMoved) && !visibleHunks[line.Hunk] {
+		if ignoreWhitespace && !visibleHunks[line.Hunk] {
 			continue
 		}
 		line.OriginalIndex = index
@@ -102,36 +97,6 @@ func hideWhitespaceOnlyChanges(lines []diff.Line, hidden []bool) {
 				hidden[addition] = true
 			}
 		}
-	}
-}
-
-func hideMovedLines(lines []diff.Line, hidden []bool, ignoreWhitespace bool) {
-	deletions := map[string][]int{}
-	for index, line := range lines {
-		if hidden[index] || line.Kind != diff.Deletion {
-			continue
-		}
-		key := line.Text
-		if ignoreWhitespace {
-			key = whitespaceKey(key)
-		}
-		deletions[key] = append(deletions[key], index)
-	}
-	for index, line := range lines {
-		if hidden[index] || line.Kind != diff.Addition {
-			continue
-		}
-		key := line.Text
-		if ignoreWhitespace {
-			key = whitespaceKey(key)
-		}
-		matches := deletions[key]
-		if len(matches) == 0 {
-			continue
-		}
-		hidden[matches[0]] = true
-		hidden[index] = true
-		deletions[key] = matches[1:]
 	}
 }
 

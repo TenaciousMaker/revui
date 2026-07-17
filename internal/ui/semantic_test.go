@@ -69,11 +69,12 @@ func TestSemanticAnalysisRunsOffRenderPathAndProjectsRanges(t *testing.T) {
 	}
 	m.semanticReflow = true
 	m.repositories = stubSemanticRepository{oldSource: oldSource, newSource: newSource}
-	m.semantic.analyzer = stubSemanticAnalyzer{plan: semantic.Plan{
+	plan := semantic.Plan{
 		Engine: semantic.EngineAST,
 		Old:    []semantic.Range{{Start: oldChanged, End: oldChanged + len("widgetSettings.widgetLimit")}},
 		New:    []semantic.Range{{Start: newChanged, End: newChanged + len("settings.config.limit")}},
-	}}
+	}
+	m.semantic.analyzer = stubSemanticAnalyzer{plan: plan}
 	command := m.ensureSemanticAnalysis()
 	if command == nil || !m.semantic.loading || m.semantic.ready {
 		t.Fatalf("analysis was not scheduled: %#v", m.semantic)
@@ -84,11 +85,51 @@ func TestSemanticAnalysisRunsOffRenderPathAndProjectsRanges(t *testing.T) {
 		t.Fatalf("analysis result not applied: %#v", m.semantic)
 	}
 	spans := m.currentIntralineSpans()
-	if got := selectedSpanText(lines[2].Text, spans[2]); got != "widgetSettings.widgetLimit" {
-		t.Fatalf("old projected span = %q", got)
+	if got := selectedSpanText(lines[2].Text, spans[2]); got != "" {
+		t.Fatalf("dense old-line emphasis was not suppressed: %q", got)
 	}
 	if got := selectedSpanText(lines[3].Text, spans[3]); got != "settings.config.limit" {
 		t.Fatalf("new projected span = %q", got)
+	}
+	raw := projectSemanticPlan(lines, plan, oldSource, newSource)
+	if got := selectedSpanText(lines[2].Text, raw[2]); got != "widgetSettings.widgetLimit" {
+		t.Fatalf("raw old projection = %q", got)
+	}
+}
+
+func TestSemanticHighlightRefinesChangedStringLiteralTokens(t *testing.T) {
+	oldSource := []byte("className=\"whitespace-pre-wrap font-sans text-sm leading-relaxed text-color-default\"\n")
+	newSource := []byte("className=\"max-w-full min-w-0 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-color-default\"\n")
+	plan, err := semantic.New(0).Analyze(context.Background(), semantic.Input{Path: "widget.tsx", Old: oldSource, New: newSource})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Engine != semantic.EngineAST {
+		t.Skip("AST semantic analysis unavailable without cgo")
+	}
+	lines := []diff.Line{
+		{Kind: diff.Deletion, Hunk: 0, Text: strings.TrimSuffix(string(oldSource), "\n"), OldNumber: 1},
+		{Kind: diff.Addition, Hunk: 0, Text: strings.TrimSuffix(string(newSource), "\n"), NewNumber: 1},
+	}
+	repo := &gitrepo.Repository{Files: []diff.File{{Path: "widget.tsx", Lines: lines}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.semanticReflow = true
+	m.semantic.id, m.semantic.repo, m.semantic.file = 1, repo, 0
+	m.applySemanticResult(semanticResultMsg{id: 1, repo: repo, file: 0, oldSource: oldSource, newSource: newSource, plan: plan})
+
+	selected := selectedSpanText(lines[1].Text, m.semantic.spans[1])
+	for _, added := range []string{"max", "min", "break"} {
+		if !strings.Contains(selected, added) {
+			t.Fatalf("added class %q was not emphasized: %q", added, selected)
+		}
+	}
+	for _, unchanged := range []string{"whitespace-pre-wrap", "font-sans", "text-color-default"} {
+		if strings.Contains(selected, unchanged) {
+			t.Fatalf("unchanged class %q was emphasized: %q", unchanged, selected)
+		}
 	}
 }
 
@@ -105,6 +146,37 @@ func TestStaleSemanticResultIsIgnored(t *testing.T) {
 	m.applySemanticResult(semanticResultMsg{id: 1, repo: repo, file: 0, plan: semantic.Plan{Engine: semantic.EngineAST}})
 	if m.semantic.ready || m.semantic.file != 1 {
 		t.Fatalf("stale result changed state: %#v", m.semantic)
+	}
+}
+
+func TestSemanticResultPreservesUnifiedCursorPosition(t *testing.T) {
+	lines := []diff.Line{
+		{Kind: diff.Meta, Text: "@@ -1,6 +1,6 @@", Hunk: 0},
+		{Kind: diff.Context, Text: "one", OldNumber: 1, NewNumber: 1, Hunk: 0},
+		{Kind: diff.Context, Text: "two", OldNumber: 2, NewNumber: 2, Hunk: 0},
+		{Kind: diff.Deletion, Text: "old", OldNumber: 3, Hunk: 0},
+		{Kind: diff.Addition, Text: "new", NewNumber: 3, Hunk: 0},
+		{Kind: diff.Context, Text: "four", OldNumber: 4, NewNumber: 4, Hunk: 0},
+		{Kind: diff.Context, Text: "five", OldNumber: 5, NewNumber: 5, Hunk: 0},
+		{Kind: diff.Context, Text: "six", OldNumber: 6, NewNumber: 6, Hunk: 0},
+	}
+	repo := &gitrepo.Repository{Files: []diff.File{{Path: "a.ts", Lines: lines}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus, m.view, m.height = focusDiff, unified, 10
+	m.line, m.lineScroll = 4, 2
+	m.semanticReflow = true
+	m.semantic.id, m.semantic.repo, m.semantic.file, m.semantic.loading = 1, repo, 0, true
+	oldSource := []byte("one\ntwo\nold\nfour\nfive\nsix\n")
+	newSource := []byte("one\ntwo\nnew\nfour\nfive\nsix\n")
+	m.applySemanticResult(semanticResultMsg{
+		id: 1, repo: repo, file: 0, oldSource: oldSource, newSource: newSource,
+		plan: semantic.Plan{Engine: semantic.EngineToken},
+	})
+	if m.line != 4 || m.lineScroll != 2 {
+		t.Fatalf("semantic result moved unified position to line=%d scroll=%d, want 4/2", m.line, m.lineScroll)
 	}
 }
 
@@ -183,6 +255,68 @@ func TestSemanticLabelReportsLifecycleAndEngine(t *testing.T) {
 	m.semantic.ready, m.semantic.warning = false, "source unavailable"
 	if got := m.semanticLabel(); got != "SEM!" {
 		t.Fatalf("failed label = %q", got)
+	}
+}
+
+func TestSemanticPresentationDoesNotEmphasizePureInsertionTokens(t *testing.T) {
+	line := diff.Line{Kind: diff.Addition, Text: "const [pendingRemovalId, setPendingRemovalId] = useState(null);", NewNumber: 1, OriginalIndex: 0}
+	spans := filterSemanticSpans([]diff.Line{line}, map[int][]textSpan{0: {{start: 0, end: len([]rune(line.Text))}}})
+	if len(spans[0]) != 0 {
+		t.Fatalf("pure insertion received redundant intraline emphasis: %#v", spans[0])
+	}
+}
+
+func TestSemanticPresentationKeepsSparseReplacementEmphasis(t *testing.T) {
+	lines := []diff.Line{
+		{Kind: diff.Deletion, Text: "<Dialog open={open} onOpenChange={onOpenChange}>", OldNumber: 1, Hunk: 0},
+		{Kind: diff.Addition, Text: "<Dialog open={open} onOpenChange={handleOpenChange}>", NewNumber: 1, Hunk: 0},
+	}
+	start := strings.Index(lines[1].Text, "handleOpenChange")
+	spans := filterSemanticSpans(lines, map[int][]textSpan{1: {{start: start, end: start + len("handleOpenChange")}}})
+	if len(spans[1]) != 1 {
+		t.Fatalf("useful replacement emphasis was removed: %#v", spans)
+	}
+}
+
+func TestSemanticPresentationShowsIdentifierRemovedDuringImportReflow(t *testing.T) {
+	oldSource := []byte("import {\n  type ReactNode,\n  useEffect,\n  useLayoutEffect,\n  useMemo,\n  useRef,\n  useState,\n} from 'react';\n")
+	newSource := []byte("import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';\n")
+	lines := []diff.Line{
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 1, Text: "import {"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 2, Text: "  type ReactNode,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 3, Text: "  useEffect,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 4, Text: "  useLayoutEffect,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 5, Text: "  useMemo,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 6, Text: "  useRef,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 7, Text: "  useState,"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 8, Text: "} from 'react';"},
+		{Kind: diff.Addition, Hunk: 0, NewNumber: 1, Text: string(newSource[:len(newSource)-1])},
+	}
+	plan, err := semantic.New(0).Analyze(context.Background(), semantic.Input{Path: "component.tsx", Old: oldSource, New: newSource})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := projectSemanticPlan(lines, plan, oldSource, newSource)
+	if got := selectedSpanText(lines[3].Text, raw[3]); got != "useLayoutEffect," {
+		t.Fatalf("removed import projection = %q, want useLayoutEffect,", got)
+	}
+	spans := filterSemanticSpans(lines, raw)
+	if got := selectedSpanText(lines[3].Text, spans[3]); got != "useLayoutEffect," {
+		t.Fatalf("removed import emphasis = %q, want useLayoutEffect, (plan: %#v)", got, plan.Correspondences)
+	}
+	if got := selectedSpanText(lines[8].Text, spans[8]); got != "" {
+		t.Fatalf("unchanged reformatted import received noisy emphasis: %q", got)
+	}
+}
+
+func TestSemanticPresentationSuppressesDenseReplacementEmphasis(t *testing.T) {
+	lines := []diff.Line{
+		{Kind: diff.Deletion, Text: "const oldValue = before();", OldNumber: 1, Hunk: 0},
+		{Kind: diff.Addition, Text: "const entirelyDifferent = after();", NewNumber: 1, Hunk: 0},
+	}
+	spans := filterSemanticSpans(lines, map[int][]textSpan{1: {{start: 0, end: len([]rune(lines[1].Text))}}})
+	if len(spans[1]) != 0 {
+		t.Fatalf("dense replacement received noisy emphasis: %#v", spans[1])
 	}
 }
 

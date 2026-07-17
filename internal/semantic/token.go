@@ -15,13 +15,26 @@ func (tokenAdapter) analyze(ctx context.Context, input Input) (Plan, error) {
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
-	oldRanges, newRanges, moves := compareEntries(tokenEntries(input.Old), tokenEntries(input.New))
-	return Plan{Engine: EngineToken, Old: oldRanges, New: newRanges, Moves: moves}, nil
+	oldEntries, err := tokenEntries(ctx, input.Old)
+	if err != nil {
+		return Plan{}, err
+	}
+	newEntries, err := tokenEntries(ctx, input.New)
+	if err != nil {
+		return Plan{}, err
+	}
+	oldRanges, newRanges, pairs := compareEntriesDetailed(oldEntries, newEntries)
+	return Plan{Engine: EngineToken, Old: oldRanges, New: newRanges, Correspondences: pairs}, nil
 }
 
-func tokenEntries(source []byte) []entry {
+func tokenEntries(ctx context.Context, source []byte) ([]entry, error) {
 	var entries []entry
 	for start := 0; start < len(source); {
+		if start&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		current, size := utf8.DecodeRune(source[start:])
 		if unicode.IsSpace(current) {
 			start += size
@@ -80,10 +93,16 @@ func tokenEntries(source []byte) []entry {
 		if key == "" {
 			key = string(source[start:end])
 		}
-		entries = append(entries, entry{key: key, start: start, end: end})
+		role := "token"
+		if strings.HasPrefix(key, "literal\x00") {
+			role = "literal"
+		} else if strings.HasPrefix(key, "comment\x00") {
+			role = "comment"
+		}
+		entries = append(entries, entry{key: key, role: role, start: start, end: end})
 		start = end
 	}
-	return entries
+	return entries, nil
 }
 
 func quotedLiteralEnd(source []byte, start int, quote byte) int {

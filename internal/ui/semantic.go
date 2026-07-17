@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"sort"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,16 +25,19 @@ type semanticResultMsg struct {
 }
 
 type semanticAnalysisState struct {
-	analyzer semantic.Analyzer
-	cancel   context.CancelFunc
-	id       uint64
-	repo     *gitrepo.Repository
-	file     int
-	loading  bool
-	ready    bool
-	engine   semantic.Engine
-	warning  string
-	spans    map[int][]textSpan
+	analyzer  semantic.Analyzer
+	cancel    context.CancelFunc
+	id        uint64
+	repo      *gitrepo.Repository
+	file      int
+	loading   bool
+	ready     bool
+	engine    semantic.Engine
+	warning   string
+	spans     map[int][]textSpan
+	layout    *semantic.Layout
+	oldSource []byte
+	newSource []byte
 }
 
 func (m *Model) ensureSemanticAnalysis() tea.Cmd {
@@ -56,6 +61,9 @@ func (m *Model) ensureSemanticAnalysis() tea.Cmd {
 	m.semantic.engine = ""
 	m.semantic.warning = ""
 	m.semantic.spans = nil
+	m.semantic.layout = nil
+	m.semantic.oldSource = nil
+	m.semantic.newSource = nil
 	id, repo, file := m.semantic.id, m.repo, m.file
 	operations, analyzer := m.repositories, m.semantic.analyzer
 	return func() tea.Msg {
@@ -75,6 +83,7 @@ func (m *Model) applySemanticResult(msg semanticResultMsg) {
 		msg.repo != m.semantic.repo || msg.file != m.semantic.file {
 		return
 	}
+	position := m.captureSplitLayoutPosition()
 	m.semantic.cancel = nil
 	m.semantic.loading = false
 	if msg.err != nil {
@@ -86,14 +95,137 @@ func (m *Model) applySemanticResult(msg semanticResultMsg) {
 	m.semantic.ready = true
 	m.semantic.engine = msg.plan.Engine
 	m.semantic.warning = msg.plan.Warning
-	m.semantic.spans = projectSemanticPlan(m.repo.Files[m.file].Lines, msg.plan, msg.oldSource, msg.newSource)
+	rawSpans := projectSemanticPlan(m.repo.Files[m.file].Lines, msg.plan, msg.oldSource, msg.newSource)
+	m.semantic.spans = refineSemanticSpans(m.repo.Files[m.file].Lines, filterSemanticSpans(m.repo.Files[m.file].Lines, rawSpans))
+	m.semantic.layout = msg.plan.Layout
+	m.semantic.oldSource = msg.oldSource
+	m.semantic.newSource = msg.newSource
+	m.restoreSplitLayoutPosition(position)
 	if msg.plan.Warning != "" {
 		m.status = msg.plan.Warning
+	} else if m.normalizedLayout && msg.plan.Layout != nil {
+		m.status = "Normalized split ready."
+	} else if m.normalizedLayout {
+		m.status = "Normalized layout unavailable; showing the raw split diff."
 	} else if msg.plan.Engine == semantic.EngineAST {
 		m.status = "AST highlighting ready."
 	} else {
 		m.status = "Token highlighting ready; this language has no AST adapter."
 	}
+}
+
+// Tree-sitter intentionally treats string literals as atomic syntax. When a
+// one-line replacement changes only part of such a leaf (class lists are the
+// common case), refine an otherwise-empty AST result with the lexical matcher.
+// Restricting this to one-for-one replacement runs avoids reintroducing dense
+// emphasis across formatter-driven multi-line rewrites.
+func refineSemanticSpans(lines []diff.Line, spans map[int][]textSpan) map[int][]textSpan {
+	for start := 0; start < len(lines); {
+		if !isChangedLine(lines[start]) {
+			start++
+			continue
+		}
+		hunk := lines[start].Hunk
+		end := start
+		var deletions, additions []int
+		for end < len(lines) && lines[end].Hunk == hunk && isChangedLine(lines[end]) {
+			if lines[end].Kind == diff.Deletion {
+				deletions = append(deletions, end)
+			} else {
+				additions = append(additions, end)
+			}
+			end++
+		}
+		if len(deletions) == 1 && len(additions) == 1 && len(spans[deletions[0]]) == 0 && len(spans[additions[0]]) == 0 {
+			oldText, newText := expandTabs(lines[deletions[0]].Text), expandTabs(lines[additions[0]].Text)
+			oldSpans, newSpans := intralineChanges(oldText, newText)
+			if usefulSemanticEmphasis(oldText, oldSpans) {
+				spans[deletions[0]] = oldSpans
+			}
+			if usefulSemanticEmphasis(newText, newSpans) {
+				spans[additions[0]] = newSpans
+			}
+		}
+		start = end
+	}
+	return spans
+}
+
+func filterSemanticSpans(lines []diff.Line, spans map[int][]textSpan) map[int][]textSpan {
+	eligible := make([]bool, len(lines))
+	for start := 0; start < len(lines); {
+		if lines[start].Kind != diff.Deletion && lines[start].Kind != diff.Addition {
+			start++
+			continue
+		}
+		end, hasDeletion, hasAddition := start, false, false
+		for end < len(lines) && (lines[end].Kind == diff.Deletion || lines[end].Kind == diff.Addition) && lines[end].Hunk == lines[start].Hunk {
+			hasDeletion = hasDeletion || lines[end].Kind == diff.Deletion
+			hasAddition = hasAddition || lines[end].Kind == diff.Addition
+			end++
+		}
+		if hasDeletion && hasAddition {
+			for index := start; index < end; index++ {
+				eligible[index] = true
+			}
+		}
+		start = end
+	}
+	filtered := make(map[int][]textSpan)
+	for index, lineSpans := range spans {
+		if index < 0 || index >= len(lines) || !eligible[index] || !usefulSemanticEmphasis(lines[index].Text, lineSpans) {
+			continue
+		}
+		filtered[index] = lineSpans
+	}
+	return filtered
+}
+
+func usefulSemanticEmphasis(text string, spans []textSpan) bool {
+	runes := []rune(expandTabs(text))
+	emphasized := make([]bool, len(runes))
+	for _, span := range spans {
+		for index := max(0, span.start); index < min(len(runes), span.end); index++ {
+			emphasized[index] = true
+		}
+	}
+	meaningful, covered := 0, 0
+	for index, value := range runes {
+		if unicode.IsSpace(value) {
+			continue
+		}
+		meaningful++
+		if emphasized[index] {
+			covered++
+		}
+	}
+	return meaningful > 0 && covered > 0 && (covered*100 < meaningful*65 || standaloneSemanticItem(text))
+}
+
+// A formatter commonly turns one import/argument/member per line into a
+// single compact line. In that case a removed identifier legitimately covers
+// almost the entire old visual line, but it is still the one fact the reviewer
+// needs to see. Keep that emphasis without allowing dense statements back in.
+func standaloneSemanticItem(text string) bool {
+	text = strings.TrimSpace(text)
+	text = strings.TrimSuffix(strings.TrimSuffix(text, ","), ";")
+	if text == "" {
+		return false
+	}
+	for index, value := range text {
+		if unicode.IsLetter(value) || unicode.IsDigit(value) || value == '_' || value == '$' || value == '.' {
+			if index == 0 && unicode.IsDigit(value) {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (m Model) normalizedLayoutReady() bool {
+	return m.semantic.ready && m.semantic.repo == m.repo && m.semantic.file == m.file && m.semantic.layout != nil
 }
 
 func (m *Model) cancelSemanticAnalysis() {
@@ -108,6 +240,9 @@ func (m *Model) cancelSemanticAnalysis() {
 	m.semantic.spans = nil
 	m.semantic.engine = ""
 	m.semantic.warning = ""
+	m.semantic.layout = nil
+	m.semantic.oldSource = nil
+	m.semantic.newSource = nil
 }
 
 func (m Model) semanticLabel() string {
@@ -132,6 +267,19 @@ func (m Model) semanticLabel() string {
 	return "TOKEN*"
 }
 
+func (m Model) normalizationLabel() string {
+	if !m.normalizedLayout {
+		return ""
+	}
+	if m.semantic.loading || m.semantic.repo != m.repo || m.semantic.file != m.file {
+		return "NORM…"
+	}
+	if m.semantic.ready && m.semantic.layout != nil {
+		return "NORMALIZED"
+	}
+	return "NORM N/A"
+}
+
 func (m Model) semanticSpansForVisibleLines(lines []diff.Line) map[int][]textSpan {
 	if !m.semanticReflow || !m.semantic.ready || m.semantic.repo != m.repo || m.semantic.file != m.file {
 		return nil
@@ -148,6 +296,8 @@ func (m Model) semanticSpansForVisibleLines(lines []diff.Line) map[int][]textSpa
 func projectSemanticPlan(lines []diff.Line, plan semantic.Plan, oldSource, newSource []byte) map[int][]textSpan {
 	oldStarts := sourceLineStarts(oldSource)
 	newStarts := sourceLineStarts(newSource)
+	oldRanges := plan.ChangedRanges(semantic.OldSide)
+	newRanges := plan.ChangedRanges(semantic.NewSide)
 	result := make(map[int][]textSpan)
 	for index, line := range lines {
 		var source []byte
@@ -156,9 +306,9 @@ func projectSemanticPlan(lines []diff.Line, plan semantic.Plan, oldSource, newSo
 		var number int
 		switch line.Kind {
 		case diff.Deletion:
-			source, starts, ranges, number = oldSource, oldStarts, plan.Old, line.OldNumber
+			source, starts, ranges, number = oldSource, oldStarts, oldRanges, line.OldNumber
 		case diff.Addition:
-			source, starts, ranges, number = newSource, newStarts, plan.New, line.NewNumber
+			source, starts, ranges, number = newSource, newStarts, newRanges, line.NewNumber
 		default:
 			continue
 		}

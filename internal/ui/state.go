@@ -40,8 +40,8 @@ type contentPaneState struct {
 	sourceScroll     int
 	sourceFromBase   bool
 	ignoreWhitespace bool
-	ignoreMoved      bool
 	semanticReflow   bool
+	normalizedLayout bool
 }
 
 // searchState owns both changed-file fuzzy search and repository text search.

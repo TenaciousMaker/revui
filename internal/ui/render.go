@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/alecthomas/chroma/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/TenaciousMaker/revui/internal/diff"
@@ -421,14 +422,14 @@ func (m Model) renderDiff(width, height int) string {
 	}
 	title := sectionStyle.Render(section)
 	if variant != "" {
-		if m.sourcePath == "" && m.ignoreWhitespace {
+		if m.sourcePath == "" && m.ignoreWhitespace && !m.semanticReflow {
 			variant += "  NO WS"
-		}
-		if m.sourcePath == "" && m.ignoreMoved {
-			variant += "  NO MOVES"
 		}
 		if m.sourcePath == "" && m.semanticReflow {
 			variant += "  " + m.semanticLabel()
+		}
+		if m.sourcePath == "" && m.normalizedLayout && m.view == split {
+			variant += "  " + m.normalizationLabel()
 		}
 		title += m.theme.muted.Render("  " + variant)
 	}
@@ -512,14 +513,31 @@ func (m Model) renderUnifiedLineWithSpans(index int, line diff.Line, width int, 
 }
 
 type splitRow struct {
-	old, new           *diff.Line
-	oldIndex, newIndex int
-	meta               *diff.Line
-	metaIndex          int
+	old, new               *diff.Line
+	oldIndex, newIndex     int
+	oldIndices, newIndices []int
+	meta                   *diff.Line
+	metaIndex              int
+	normalized             bool
+	oldSpans, newSpans     []textSpan
+	oldSyntax, newSyntax   []chroma.Token
 }
 
 func (r splitRow) containsLine(line int) bool {
-	return r.metaIndex == line || r.oldIndex == line || r.newIndex == line
+	if r.metaIndex == line || r.oldIndex == line || r.newIndex == line {
+		return true
+	}
+	for _, index := range r.oldIndices {
+		if index == line {
+			return true
+		}
+	}
+	for _, index := range r.newIndices {
+		if index == line {
+			return true
+		}
+	}
+	return false
 }
 
 func (r splitRow) cursorIndex() int {
@@ -583,8 +601,7 @@ func splitRows(lines []diff.Line) []splitRow {
 }
 
 func (m Model) renderSplit(width, height int) string {
-	lines := m.currentLines()
-	rows := splitRows(lines)
+	rows := m.currentSplitRows()
 	spans := m.currentIntralineSpans()
 	half := max(12, (width-1)/2)
 	var out []string
@@ -615,8 +632,12 @@ func (m Model) renderSplit(width, height int) string {
 		if row.newIndex >= 0 {
 			newSpans = spans[row.newIndex]
 		}
-		left := m.renderSplitCellAt(row.old, oldSyntaxIndex, half, selected, true, oldSpans)
-		right := m.renderSplitCellAt(row.new, newSyntaxIndex, width-half-1, selected, false, newSpans)
+		if row.normalized {
+			oldSyntaxIndex, newSyntaxIndex = -1, -1
+			oldSpans, newSpans = row.oldSpans, row.newSpans
+		}
+		left := m.renderSplitCellAt(row.old, oldSyntaxIndex, half, selected, true, oldSpans, row.normalized, row.oldSyntax)
+		right := m.renderSplitCellAt(row.new, newSyntaxIndex, width-half-1, selected, false, newSpans, row.normalized, row.newSyntax)
 		divider := m.theme.border.Render("│")
 		if selected {
 			divider = m.theme.focus.Render("│")
@@ -627,10 +648,10 @@ func (m Model) renderSplit(width, height int) string {
 }
 
 func (m Model) renderSplitCell(line *diff.Line, width int, selected, left bool) string {
-	return m.renderSplitCellAt(line, -1, width, selected, left, nil)
+	return m.renderSplitCellAt(line, -1, width, selected, left, nil, false, nil)
 }
 
-func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected, left bool, spans []textSpan) string {
+func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected, left bool, spans []textSpan, standalone bool, syntax []chroma.Token) string {
 	marker := " "
 	if selected && left {
 		marker = "›"
@@ -652,12 +673,19 @@ func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected
 	gutter := fmt.Sprintf("%3s %s ", number(n), line.Kind.Marker())
 	prefix := marker + m.renderDiffGutter(gutter, line.Kind)
 	contentWidth := max(1, width-lipgloss.Width(prefix))
-	source := xansi.Truncate(expandTabs(line.Text), contentWidth, "…")
-	if lineIndex >= 0 {
-		source = m.highlightDiffLine(lineIndex, source, syntaxBackground(line.Kind), spans)
+	source := expandTabs(line.Text)
+	if standalone {
+		if len(syntax) > 0 {
+			source = m.highlightVirtualSyntax(syntax, syntaxBackground(line.Kind), spans)
+		} else {
+			source = m.highlightVirtualDiffLine(source, syntaxBackground(line.Kind), spans)
+		}
+	} else if lineIndex >= 0 {
+		source = m.highlightDiffLine(lineIndex, xansi.Truncate(source, contentWidth, "…"), syntaxBackground(line.Kind), spans)
 	} else {
-		source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
+		source = m.highlightLine(m.currentPath(), xansi.Truncate(source, contentWidth, "…"), syntaxBackground(line.Kind))
 	}
+	source = xansi.Truncate(source, contentWidth, "…")
 	content := xansi.Truncate(prefix+source, width, "")
 	style := m.theme.canvas.Width(width).MaxWidth(width)
 	switch line.Kind {
@@ -708,17 +736,26 @@ func (m Model) diffSemanticStyle(kind diff.LineKind) lipgloss.Style {
 }
 
 func (m Model) renderFooter() string {
-	keys := "j/k move   [/] hunk   s split   i whitespace   m moves   o source   y copy   ? help"
+	keys := "j/k move   [/] hunk   s split   n normalize   i whitespace   o source   y copy   ? help"
+	if m.semanticReflow {
+		keys = "j/k move   [/] hunk   s split   n normalized   o source   y copy   ? help"
+	}
 	if m.mode == searchingRepository {
 		keys = "type query   ↑↓ results   enter open   esc close"
 	} else if m.sourcePath != "" {
 		keys = "j/k move   o/d diff   y copy   space reviewed   f search   A scope   esc back"
 	} else if m.width < 90 {
-		keys = "tab panes   o full   i ws   m moves   e semantic*   f text   y copy   ? help"
+		keys = "tab panes   o full   n normalize*   i ws   f text   y copy   ? help"
+		if m.semanticReflow {
+			keys = "tab panes   o full   n normalized   f text   y copy   ? help"
+		}
 	} else if m.focus == focusFiles {
 		keys = "j/k move   enter open   t tree   A scope   space reviewed   w widen   / jump   ? help"
 	} else if m.width < 135 {
-		keys = "o full   i whitespace   m moves   e semantic*   f text   y copy   ? help"
+		keys = "o full   n normalize*   i whitespace   f text   y copy   ? help"
+		if m.semanticReflow {
+			keys = "o full   n normalized   f text   y copy   ? help"
+		}
 	}
 	status := truncatePlain(m.status, max(10, m.width-len(keys)-5))
 	gap := max(1, m.width-lipgloss.Width(status)-lipgloss.Width(keys)-2)
@@ -750,7 +787,7 @@ func (m Model) renderSearch() string {
 
 func (m Model) renderHelp() string {
 	return m.theme.focus.Render("REVUI KEYMAP") + "\n\n" +
-		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes") + m.keyRow("m", "hide moved lines") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("AST is available for TypeScript/TSX when supported by the build; TOKEN* is the universal fallback. Reviewed progress lives under .git/revui.")
+		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Semantic modes ignore formatting whitespace. NORMALIZED inserts visual whitespace only; navigation and copy still address original source. Reviewed progress lives under .git/revui.")
 }
 
 func (m Model) overlay(background, foreground string, width, height int) string {

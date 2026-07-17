@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -41,6 +42,24 @@ func (m Model) highlightDiffLine(index int, source, background string, spans []t
 	return m.highlight.diffLine(&m.repo.Files[m.file], index, source, background, spans)
 }
 
+func (m Model) highlightVirtualDiffLine(source, background string, spans []textSpan) string {
+	if !m.theme.color || m.highlight == nil {
+		return source
+	}
+	return m.highlight.virtualLine(m.currentPath(), source, background, spans)
+}
+
+func (m Model) highlightVirtualSyntax(tokens []chroma.Token, background string, spans []textSpan) string {
+	if !m.theme.color || m.highlight == nil {
+		var plain strings.Builder
+		for _, token := range tokens {
+			plain.WriteString(token.Value)
+		}
+		return plain.String()
+	}
+	return styleSyntaxTokens(tokens, background, m.currentPath(), spans)
+}
+
 func (h *highlighter) line(filename, source, background string) string {
 	if source == "" {
 		return ""
@@ -61,6 +80,36 @@ func (h *highlighter) line(filename, source, background string) string {
 	}
 	result := styleSyntaxTokens(tokens, background, filename, nil)
 	h.cache.Store(key, result)
+	return result
+}
+
+func (h *highlighter) virtualLine(filename, source, background string, spans []textSpan) string {
+	if source == "" {
+		return ""
+	}
+	var key strings.Builder
+	key.WriteString(filename + "\x00virtual\x00" + background + "\x00" + source)
+	for _, span := range spans {
+		key.WriteByte('\x00')
+		key.WriteString(strconv.Itoa(span.start))
+		key.WriteByte(':')
+		key.WriteString(strconv.Itoa(span.end))
+	}
+	cacheKey := key.String()
+	if cached, ok := h.cache.Load(cacheKey); ok {
+		return cached.(string)
+	}
+	lexer := chroma.Coalesce(lexerForFilename(filename))
+	iterator, err := lexer.Tokenise(nil, source+"\n")
+	if err != nil {
+		return source
+	}
+	var tokens []chroma.Token
+	for token := iterator(); token != chroma.EOF; token = iterator() {
+		tokens = append(tokens, token)
+	}
+	result := styleSyntaxTokens(tokens, background, filename, spans)
+	h.cache.Store(cacheKey, result)
 	return result
 }
 

@@ -91,6 +91,7 @@ type Model struct {
 	renderVersion       uint64
 	renderCache         *renderCache
 	diffDisplay         *diffDisplayCache
+	normalizedSplit     *normalizedSplitCache
 	semantic            semanticAnalysisState
 }
 
@@ -122,7 +123,8 @@ func newModel(repo *gitrepo.Repository, preferences preferenceStore, reviews rev
 		filePaneState:    filePaneState{collapsed: map[string]bool{}},
 		renderCache:      &renderCache{},
 		diffDisplay:      &diffDisplayCache{},
-		semantic:         semanticAnalysisState{analyzer: semantic.New(32), file: -1},
+		normalizedSplit:  &normalizedSplitCache{},
+		semantic:         semanticAnalysisState{analyzer: semantic.New(8), file: -1},
 		preferencesPath:  preferencesPath,
 	}
 	m.applyPreferences(loadedPreferences)
@@ -410,6 +412,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.persistPreferences()
 	case "i":
+		if m.semanticReflow {
+			m.status = "Semantic mode already ignores formatting whitespace."
+			break
+		}
 		m.ignoreWhitespace = !m.ignoreWhitespace
 		m.resetLineCursor()
 		if m.ignoreWhitespace {
@@ -418,23 +424,32 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "Showing whitespace changes."
 		}
 		m.persistPreferences()
-	case "m":
-		m.ignoreMoved = !m.ignoreMoved
-		m.resetLineCursor()
-		if m.ignoreMoved {
-			m.status = "Hiding moved lines."
-		} else {
-			m.status = "Showing moved lines."
-		}
-		m.persistPreferences()
 	case "e":
+		position := m.captureSplitLayoutPosition()
 		m.semanticReflow = !m.semanticReflow
-		m.resetLineCursor()
 		if m.semanticReflow {
 			m.status = "Experimental semantic highlighting enabled; analyzing source."
 		} else {
+			m.normalizedLayout = false
 			m.status = "Standard intraline highlighting enabled."
 		}
+		m.restoreSplitLayoutPosition(position)
+		m.persistPreferences()
+	case "n":
+		position := m.captureSplitLayoutPosition()
+		m.normalizedLayout = !m.normalizedLayout
+		if m.normalizedLayout {
+			m.semanticReflow = true
+			m.view = split
+			if m.normalizedLayoutReady() {
+				m.status = "Normalized split ready."
+			} else {
+				m.status = "Experimental normalized split enabled; analyzing structure."
+			}
+		} else {
+			m.status = "Raw source layout restored."
+		}
+		m.restoreSplitLayoutPosition(position)
 		m.persistPreferences()
 	case "]":
 		m.jumpHunk(1)
@@ -541,10 +556,11 @@ func (m Model) currentLines() []diff.Line {
 	if m.file < 0 || m.file >= len(m.repo.Files) {
 		return nil
 	}
+	ignoreWhitespace := m.ignoreWhitespace && !m.semanticReflow
 	if m.diffDisplay == nil {
-		return buildVisibleDiffLines(m.repo.Files[m.file].Lines, m.ignoreWhitespace, m.ignoreMoved)
+		return buildVisibleDiffLines(m.repo.Files[m.file].Lines, ignoreWhitespace)
 	}
-	return m.diffDisplay.linesFor(m.repo, m.file, m.ignoreWhitespace, m.ignoreMoved)
+	return m.diffDisplay.linesFor(m.repo, m.file, ignoreWhitespace)
 }
 
 func (m Model) currentIntralineSpans() map[int][]textSpan {
@@ -558,10 +574,16 @@ func (m Model) currentIntralineSpans() map[int][]textSpan {
 	if m.diffDisplay == nil {
 		return buildIntralineSpanSet(lines, m.semanticReflow)
 	}
-	return m.diffDisplay.intralineFor(m.repo, m.file, m.ignoreWhitespace, m.ignoreMoved, m.semanticReflow)
+	return m.diffDisplay.intralineFor(m.repo, m.file, m.ignoreWhitespace && !m.semanticReflow, m.semanticReflow)
 }
 
-func (m Model) currentSplitRows() []splitRow { return splitRows(m.currentLines()) }
+func (m Model) currentSplitRows() []splitRow {
+	lines := m.currentLines()
+	if m.normalizedSplit == nil {
+		return splitRows(lines)
+	}
+	return m.normalizedSplit.rowsFor(m, lines)
+}
 
 func (m Model) currentTreeNodes() []fileTreeNode {
 	if m.treeNodesReady && m.treeNodesScope == m.fileScope && m.treeNodesFileCount == len(m.repo.Files) && m.treeNodesPathCount == len(m.repo.AllPaths) {
@@ -918,8 +940,12 @@ func (m *Model) applyPreferences(preferences config.Preferences) {
 		m.view = split
 	}
 	m.ignoreWhitespace = preferences.IgnoreWhitespace
-	m.ignoreMoved = preferences.IgnoreMoved
 	m.semanticReflow = preferences.SemanticReflow
+	m.normalizedLayout = preferences.NormalizedLayout
+	if m.normalizedLayout {
+		m.semanticReflow = true
+		m.view = split
+	}
 }
 
 func (m *Model) persistPreferences() {
@@ -929,8 +955,8 @@ func (m *Model) persistPreferences() {
 		WideFiles:        m.wideFiles,
 		DiffView:         "unified",
 		IgnoreWhitespace: m.ignoreWhitespace,
-		IgnoreMoved:      m.ignoreMoved,
 		SemanticReflow:   m.semanticReflow,
+		NormalizedLayout: m.normalizedLayout,
 	}
 	if m.fileLayout == treeFiles {
 		preferences.FileLayout = "tree"

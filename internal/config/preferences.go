@@ -19,8 +19,8 @@ type Preferences struct {
 	WideFiles        bool   `json:"wide_files"`
 	DiffView         string `json:"diff_view"`
 	IgnoreWhitespace bool   `json:"ignore_whitespace,omitempty"`
-	IgnoreMoved      bool   `json:"ignore_moved,omitempty"`
 	SemanticReflow   bool   `json:"semantic_reflow_experimental,omitempty"`
+	NormalizedLayout bool   `json:"normalized_layout_experimental,omitempty"`
 }
 
 // Defaults returns a complete, valid preference set.

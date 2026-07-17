@@ -61,7 +61,7 @@ The watcher refreshes the review after save bursts without moving your current f
 - **One coherent branch view.** Merge-base comparison plus committed and working-tree changes.
 - **Review in context.** Toggle changed files, their sibling context, or the entire non-ignored repository tree.
 - **Diff or source.** Switch between unified/split diffs and the complete working or base file.
-- **Signal controls.** Emphasize changed words inside replacement lines, hide whitespace-only edits, and suppress lines that were only moved within a file.
+- **Signal controls.** Emphasize credible changed words inside replacement lines, or hide whitespace-only edits in the raw diff.
 - **Repository search.** See grouped context around literal matches and jump directly to a source line.
 - **Durable progress.** Reviewed files stay reviewed until their diff fingerprint changes.
 - **Location-rich copy.** Keyboard ranges and pane-constrained mouse selections copy clean code with branch/base line locations.
@@ -84,9 +84,9 @@ The watcher refreshes the review after save bursts without moving your current f
 | `/` | Fuzzy-jump to a changed file |
 | `f` | Search text across the repository |
 | `o` | Toggle complete source and diff |
-| `i` | Toggle whitespace-only changes |
-| `m` | Toggle moved lines |
+| `i` | Toggle whitespace-only changes in the raw diff |
 | `e` | Toggle experimental semantic highlighting |
+| `n` | Toggle normalized AST layout in split view |
 | `v`, then move | Define a code range |
 | `y` | Copy the current line or selected range with location |
 | `[` / `]` | Jump to the previous or next hunk |
@@ -110,11 +110,13 @@ Global display preferences use the operating system's user configuration directo
 - macOS: `~/Library/Application Support/revui/preferences.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/revui/preferences.json`
 
-Flat/tree layout, file scope, pane width, unified/split mode, whitespace/moved-line filters, and experimental semantic highlighting follow you across repositories. Cursor positions and expanded folders are temporary.
+Flat/tree layout, file scope, pane width, unified/split mode, the raw whitespace filter, semantic highlighting, and normalized layout follow you across repositories. Cursor positions and expanded folders are temporary.
 
-Experimental semantic highlighting (`e`) compares complete old and new source instead of pairing Git lines. The diff header reports the active engine: `AST` uses Tree-sitter for TypeScript/TSX, `TOKEN*` is the language-neutral fallback, and `SEM…` means analysis is still running. This makes formatter-driven wrapping and spacing visually quiet while emphasizing the tokens that actually changed. The feature is deliberately opt-in: unsupported or temporarily invalid syntax falls back safely to tokens, and standard intraline highlighting remains available by toggling it off.
+Experimental semantic highlighting (`e`) compares complete old and new source instead of pairing Git lines. The diff header reports the active engine: `AST` uses Tree-sitter for TypeScript/TSX, `TOKEN*` is the language-neutral fallback, and `SEM…` means analysis is still running. Semantic modes inherently ignore formatting whitespace, so the raw `i` filter is inactive while they are enabled. The AST engine matches a compact syntax tree while retaining original source positions, so formatter-driven wrapping, indentation, and optional TypeScript trailing commas stay visually quiet without replacing the source you are reviewing. Word emphasis is reserved for credible sparse replacements; pure insertions, deletions, mostly rewritten lines, and reordered syntax remain visibly added or removed. Unsupported syntax, excessive input, or a non-CGO build falls back visibly and safely to tokens.
 
 Tree-sitter support is compiled into normal CGO-enabled source builds and `go install` builds. Static release archives use the portable token fallback. Semantic analysis runs locally, is cancellable, and is cached only in memory for the current process.
+
+Normalized layout (`n`, shown as `NORMALIZED`) is an additional TypeScript/TSX experiment. It inserts visual line breaks inside confidently related imports and declarations, then renders the semantic engine's completed row alignment. Contiguous same-role one-to-many rewrites can be shown as a stacked composite; reordered, duplicate, mixed-role, and otherwise ambiguous owners stay in the literal Git layout. Tokens are never rewritten: line navigation and `y` always address and copy the original source. Press `n` again for the literal Git layout. Unsupported languages continue to show the raw split diff as `NORM N/A`.
 
 Reviewed-file fingerprints live under the repository's Git metadata at `.git/revui`. revui adds nothing to the working tree and makes no network requests. Repository search uses `git grep` and respects Git ignore rules.
 

@@ -68,6 +68,9 @@ func (m Model) clipboardText() (string, int) {
 
 func (m Model) clipboardSelection() (string, int, sourceRange, sourceRange) {
 	if text := m.selectedText; text != "" {
+		if m.normalizedLayout && m.view == split && m.sourcePath == "" {
+			return m.normalizedMouseClipboardSelection()
+		}
 		branchLines, baseLines := m.mouseSelectionRanges()
 		return text, strings.Count(text, "\n") + 1, branchLines, baseLines
 	}
@@ -97,6 +100,49 @@ func (m Model) clipboardSelection() (string, int, sourceRange, sourceRange) {
 	text := make([]string, 0, len(selected))
 	for _, line := range selected {
 		text = append(text, line.Text)
+	}
+	return strings.Join(text, "\n"), len(text), branchLines, baseLines
+}
+
+func (m Model) normalizedMouseClipboardSelection() (string, int, sourceRange, sourceRange) {
+	rows := m.currentSplitRows()
+	lines := m.currentLines()
+	if len(rows) == 0 || len(lines) == 0 {
+		return "", 0, sourceRange{}, sourceRange{}
+	}
+	start, end := orderedMousePoints(m.mouseSelectStart, m.mouseSelectEnd)
+	first := clamp(m.splitScroll+max(0, start.y-5), 0, len(rows)-1)
+	last := clamp(m.splitScroll+max(0, end.y-5), first, len(rows)-1)
+	codeLeft := 0
+	if m.width >= 90 {
+		codeLeft = m.filePaneWidth()
+	}
+	leftSide := start.x < codeLeft+(m.width-codeLeft)/2
+	seen := map[int]bool{}
+	var selected []diff.Line
+	for _, row := range rows[first : last+1] {
+		indices := row.newIndices
+		if len(indices) == 0 && row.newIndex >= 0 {
+			indices = []int{row.newIndex}
+		}
+		if leftSide {
+			indices = row.oldIndices
+			if len(indices) == 0 && row.oldIndex >= 0 {
+				indices = []int{row.oldIndex}
+			}
+		}
+		for _, index := range indices {
+			if index < 0 || index >= len(lines) || seen[index] {
+				continue
+			}
+			seen[index] = true
+			selected = append(selected, lines[index])
+		}
+	}
+	branchLines, baseLines := diffSourceRanges(selected)
+	text := make([]string, len(selected))
+	for index, line := range selected {
+		text[index] = line.Text
 	}
 	return strings.Join(text, "\n"), len(text), branchLines, baseLines
 }
