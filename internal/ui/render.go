@@ -667,8 +667,17 @@ func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected
 		return markerStyle.Render(marker) + m.theme.panel.Render(strings.Repeat(" ", max(0, width-1)))
 	}
 	n := line.OldNumber
-	if line.Kind == diff.Addition {
+	if !left {
 		n = line.NewNumber
+	}
+	// A virtual neutral row can exist on only one source side. Prefer the
+	// rendered side, then retain the real source number for standalone callers.
+	if n == 0 {
+		if left {
+			n = line.NewNumber
+		} else {
+			n = line.OldNumber
+		}
 	}
 	gutter := fmt.Sprintf("%3s %s ", number(n), line.Kind.Marker())
 	prefix := marker + m.renderDiffGutter(gutter, line.Kind)
@@ -736,25 +745,34 @@ func (m Model) diffSemanticStyle(kind diff.LineKind) lipgloss.Style {
 }
 
 func (m Model) renderFooter() string {
-	keys := "j/k move   [/] hunk   s split   n normalize   i whitespace   o source   y copy   ? help"
+	keys := "j/k move   [/] hunk   s split   n normalize   d difft   i whitespace   o source   y copy   ? help"
 	if m.semanticReflow {
-		keys = "j/k move   [/] hunk   s split   n normalized   o source   y copy   ? help"
+		keys = "j/k move   [/] hunk   s split   n normalized   d difft   o source   y copy   ? help"
+	}
+	if m.difftasticMode {
+		keys = "j/k move   [/] hunk   s split   d raw   o source   y copy   ? help"
 	}
 	if m.mode == searchingRepository {
 		keys = "type query   ↑↓ results   enter open   esc close"
 	} else if m.sourcePath != "" {
 		keys = "j/k move   o/d diff   y copy   space reviewed   f search   A scope   esc back"
 	} else if m.width < 90 {
-		keys = "tab panes   o full   n normalize*   i ws   f text   y copy   ? help"
+		keys = "tab panes   o full   n normalize*   d difft   i ws   f text   y copy   ? help"
 		if m.semanticReflow {
-			keys = "tab panes   o full   n normalized   f text   y copy   ? help"
+			keys = "tab panes   o full   n normalized   d difft   f text   y copy   ? help"
+		}
+		if m.difftasticMode {
+			keys = "tab panes   o full   d raw   f text   y copy   ? help"
 		}
 	} else if m.focus == focusFiles {
 		keys = "j/k move   enter open   t tree   A scope   space reviewed   w widen   / jump   ? help"
 	} else if m.width < 135 {
-		keys = "o full   n normalize*   i whitespace   f text   y copy   ? help"
+		keys = "o full   n normalize*   d difft   i whitespace   f text   y copy   ? help"
 		if m.semanticReflow {
-			keys = "o full   n normalized   f text   y copy   ? help"
+			keys = "o full   n normalized   d difft   f text   y copy   ? help"
+		}
+		if m.difftasticMode {
+			keys = "o full   d raw   f text   y copy   ? help"
 		}
 	}
 	status := truncatePlain(m.status, max(10, m.width-len(keys)-5))
@@ -787,7 +805,7 @@ func (m Model) renderSearch() string {
 
 func (m Model) renderHelp() string {
 	return m.theme.focus.Render("REVUI KEYMAP") + "\n\n" +
-		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Semantic modes ignore formatting whitespace. NORMALIZED inserts visual whitespace only; navigation and copy still address original source. Reviewed progress lives under .git/revui.")
+		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("d", "optional Difftastic structural split") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Semantic modes ignore formatting whitespace. NORMALIZED inserts visual whitespace only. DIFFT requires difft on PATH; failures preserve the raw Git split. Reviewed progress lives under .git/revui.")
 }
 
 func (m Model) overlay(background, foreground string, width, height int) string {

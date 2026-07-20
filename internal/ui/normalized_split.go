@@ -14,6 +14,8 @@ type normalizedSplitCache struct {
 	repo                       *gitrepo.Repository
 	file                       int
 	layout                     *semantic.Layout
+	semanticID                 uint64
+	difftastic                 bool
 	oldSourceLen, newSourceLen int
 	rows                       []splitRow
 }
@@ -156,18 +158,165 @@ func findSplitAnchor(rows []splitRow, anchor splitSourceAnchor) int {
 }
 
 func (c *normalizedSplitCache) rowsFor(m Model, lines []diff.Line) []splitRow {
+	if m.difftasticMode {
+		if !m.semantic.ready || m.semantic.provider != difftasticSemantic || len(m.semantic.alignment) == 0 ||
+			m.semantic.repo != m.repo || m.semantic.file != m.file {
+			return splitRows(lines)
+		}
+		if c.repo == m.repo && c.file == m.file && c.semanticID == m.semantic.id && c.difftastic &&
+			c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) {
+			return c.rows
+		}
+		rows, ok := buildDifftasticSplitRows(lines, m.semantic.alignment, m.semantic.oldSource, m.semantic.newSource, m.semantic.spans)
+		if !ok {
+			return splitRows(lines)
+		}
+		c.repo, c.file, c.layout = m.repo, m.file, nil
+		c.semanticID, c.difftastic = m.semantic.id, true
+		c.oldSourceLen, c.newSourceLen = len(m.semantic.oldSource), len(m.semantic.newSource)
+		c.rows = rows
+		attachNormalizedSyntax(c.rows, m.currentPath())
+		return c.rows
+	}
 	if !m.normalizedLayout || !m.semantic.ready || m.semantic.layout == nil || m.semantic.repo != m.repo || m.semantic.file != m.file {
 		return splitRows(lines)
 	}
-	if c.repo == m.repo && c.file == m.file && c.layout == m.semantic.layout &&
+	if c.repo == m.repo && c.file == m.file && c.layout == m.semantic.layout && !c.difftastic &&
 		c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) {
 		return c.rows
 	}
 	c.repo, c.file, c.layout = m.repo, m.file, m.semantic.layout
+	c.semanticID, c.difftastic = m.semantic.id, false
 	c.oldSourceLen, c.newSourceLen = len(m.semantic.oldSource), len(m.semantic.newSource)
 	c.rows = buildNormalizedSplitRows(lines, m.semantic.layout, m.semantic.oldSource, m.semantic.newSource)
 	attachNormalizedSyntax(c.rows, m.currentPath())
 	return c.rows
+}
+
+// buildDifftasticSplitRows projects Difftastic's whole-file line alignment
+// onto Git's review hunks. Git remains the source of truth: if an alignment
+// omits, duplicates, crosses hunks, or reorders any visible source side, the
+// caller discards the projection and renders the literal Git split.
+func buildDifftasticSplitRows(lines []diff.Line, alignment []semantic.LineAlignment, oldSource, newSource []byte, spans map[int][]textSpan) ([]splitRow, bool) {
+	oldByNumber, newByNumber := map[int]int{}, map[int]int{}
+	metaByHunk := map[int][]int{}
+	for index, line := range lines {
+		if line.Kind == diff.Meta {
+			metaByHunk[line.Hunk] = append(metaByHunk[line.Hunk], index)
+			continue
+		}
+		if lineHasOldSide(line) {
+			oldByNumber[line.OldNumber] = index
+		}
+		if lineHasNewSide(line) {
+			newByNumber[line.NewNumber] = index
+		}
+	}
+	oldText, newText := physicalSourceLines(oldSource), physicalSourceLines(newSource)
+	oldSeen, newSeen, metaSeen := map[int]bool{}, map[int]bool{}, map[int]bool{}
+	lastHunk := -1
+	rows := make([]splitRow, 0, len(lines))
+	for _, pair := range alignment {
+		oldIndex, hasOld := oldByNumber[pair.Old]
+		newIndex, hasNew := newByNumber[pair.New]
+		if !hasOld && !hasNew {
+			continue
+		}
+		if (hasOld && oldSeen[oldIndex]) || (hasNew && newSeen[newIndex]) {
+			return nil, false
+		}
+		hunk := -1
+		if hasOld {
+			hunk = lines[oldIndex].Hunk
+		}
+		if hasNew {
+			if hunk >= 0 && lines[newIndex].Hunk != hunk {
+				return nil, false
+			}
+			hunk = lines[newIndex].Hunk
+		}
+		if hunk < lastHunk {
+			return nil, false
+		}
+		if hunk != lastHunk {
+			for _, metaIndex := range metaByHunk[hunk] {
+				line := lines[metaIndex]
+				rows = append(rows, splitRow{meta: &line, metaIndex: metaIndex, oldIndex: -1, newIndex: -1})
+				metaSeen[metaIndex] = true
+			}
+			lastHunk = hunk
+		}
+		row := splitRow{oldIndex: -1, newIndex: -1, metaIndex: -1, normalized: true}
+		if hasOld {
+			if pair.Old <= 0 || pair.Old > len(oldText) {
+				return nil, false
+			}
+			line := lines[oldIndex]
+			line.Text = oldText[pair.Old-1]
+			if len(spans[oldIndex]) > 0 {
+				line.Kind = diff.Deletion
+			} else {
+				line.Kind = diff.Context
+			}
+			row.old, row.oldIndex, row.oldIndices, row.oldSpans = &line, oldIndex, []int{oldIndex}, spans[oldIndex]
+			oldSeen[oldIndex] = true
+		}
+		if hasNew {
+			if pair.New <= 0 || pair.New > len(newText) {
+				return nil, false
+			}
+			line := lines[newIndex]
+			line.Text = newText[pair.New-1]
+			if len(spans[newIndex]) > 0 {
+				line.Kind = diff.Addition
+			} else {
+				line.Kind = diff.Context
+			}
+			row.new, row.newIndex, row.newIndices, row.newSpans = &line, newIndex, []int{newIndex}, spans[newIndex]
+			newSeen[newIndex] = true
+		}
+		rows = append(rows, row)
+	}
+	for index, line := range lines {
+		switch line.Kind {
+		case diff.Meta:
+			if !metaSeen[index] {
+				return nil, false
+			}
+		case diff.Addition:
+			if !newSeen[index] {
+				return nil, false
+			}
+		case diff.Deletion:
+			if !oldSeen[index] {
+				return nil, false
+			}
+		default:
+			if !oldSeen[index] || !newSeen[index] {
+				return nil, false
+			}
+		}
+	}
+	return rows, true
+}
+
+func physicalSourceLines(source []byte) []string {
+	if len(source) == 0 {
+		return nil
+	}
+	starts := sourceLineStarts(source)
+	lines := make([]string, 0, len(starts))
+	for index, start := range starts {
+		end := len(source)
+		if index+1 < len(starts) {
+			end = starts[index+1] - 1
+		}
+		if end > start && source[end-1] == '\r' {
+			end--
+		}
+		lines = append(lines, string(source[start:end]))
+	}
+	return lines
 }
 
 func attachNormalizedSyntax(rows []splitRow, path string) {

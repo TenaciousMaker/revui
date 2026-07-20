@@ -7,8 +7,9 @@ All notable changes to revui are documented here. The project follows [Semantic 
 ### Added
 
 - GitHub-like unified and split branch diffs with syntax highlighting.
-- Intraline change emphasis, optional raw-diff whitespace filtering, and experimental whitespace-insensitive whole-source semantic highlighting with order-sensitive TypeScript/TSX syntax-tree matching, bounded fallback, and a universal token engine.
-- Experimental normalized TypeScript/TSX split layout driven by confidence-scored semantic owner blocks, including exact JSX-subtree alignment across misleading Git context matches, with literal Git fallback for ambiguous rewrites.
+- Intraline change emphasis, optional raw-diff whitespace filtering, and experimental whitespace-insensitive whole-source semantic highlighting with order-sensitive Tree-sitter matching for TypeScript/TSX, JavaScript/JSX, Go, Python, Rust, Java, JSON, C, C++, and Ruby, plus bounded fallback and a universal token engine.
+- Experimental multi-language normalized split layout driven by declarative grammar profiles and confidence-scored semantic owner blocks, including exact JSX-subtree alignment across misleading Git context matches, with literal Git fallback for ambiguous rewrites.
+- Optional Difftastic structural split mode with cancellable local analysis, validated JSON spans, whole-file line alignment, and lossless raw-Git fallback.
 - Flat, tree, contextual, and all-files repository exploration.
 - Full-file source view, fuzzy file jump, and repository text search.
 - Reviewed-file fingerprints and user-wide display preferences.
@@ -16,6 +17,10 @@ All notable changes to revui are documented here. The project follows [Semantic 
 - Keyboard and mouse navigation, selection, and accelerated scrolling.
 - OSC52 copying with file and branch/base source locations.
 - macOS and Linux release archives, checksums, SBOMs, and build provenance.
+
+### Fixed
+
+- Replaced macOS kqueue directory watches with one recursive FSEvents stream, preventing large or long-running revui sessions from exhausting the system file table. Native watcher tests now bound descriptors across startup, edit bursts, and shutdown; non-CGO macOS builds fail closed to manual refresh instead of opening per-file descriptors.
 
 ### Security
 

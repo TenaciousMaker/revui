@@ -21,6 +21,7 @@ type Preferences struct {
 	IgnoreWhitespace bool   `json:"ignore_whitespace,omitempty"`
 	SemanticReflow   bool   `json:"semantic_reflow_experimental,omitempty"`
 	NormalizedLayout bool   `json:"normalized_layout_experimental,omitempty"`
+	DifftasticMode   bool   `json:"difftastic_mode_experimental,omitempty"`
 }
 
 // Defaults returns a complete, valid preference set.

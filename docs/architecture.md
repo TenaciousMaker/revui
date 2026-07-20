@@ -21,7 +21,8 @@ Bubble Tea coordinator
        │                      │
        │                      ▼
        │              semantic analyzer
-       │               ├─ Tree-sitter adapters
+       │               ├─ Tree-sitter + grammar profiles
+       │               ├─ optional Difftastic adapter
        │               └─ token fallback
        │                      │
        │             immutable byte ranges
@@ -34,19 +35,21 @@ Lip Gloss terminal view + OSC52 clipboard
 
 `internal/diff` parses unified diff text into the line model consumed by both unified and split renderers.
 
-`internal/semantic` identifies meaningful edits independently of Git's line wrapping. Its narrow `Analyzer` interface accepts complete old/new source and returns one immutable, layout-neutral plan. A plan contains original-source correspondences (`unchanged`, `added`, `removed`, or `replaced`), confidence and parser role metadata, the engine used, and any fallback warning. Tree-sitter is an isolated adapter rather than a UI dependency; TypeScript and TSX are the first supported grammars. A language-neutral token adapter is always available, including non-CGO builds. Plans are cached by path and content hashes in a bounded in-memory LRU.
+`internal/semantic` identifies meaningful edits independently of Git's line wrapping. Its narrow `Analyzer` interface accepts complete old/new source and returns one immutable, layout-neutral plan. A plan contains original-source correspondences (`unchanged`, `added`, `removed`, or `replaced`), confidence and parser role metadata, optional physical-line alignment, the engine used, and any fallback warning. Tree-sitter is an isolated adapter rather than a UI dependency. Built-in grammar bindings cover TypeScript/TSX, JavaScript/JSX, Go, Python, Rust, Java, JSON, C, C++, and Ruby. A language-neutral token adapter is always available, including non-CGO builds. Plans are cached by path and content hashes in a bounded in-memory LRU.
+
+The explicit Difftastic mode is a second adapter behind the same `Analyzer` seam. A private injectable runner writes old/new source to a user-only temporary workspace, invokes the local `difft` executable with cancellable JSON output, validates every returned byte span against the original buffers, and removes the workspace. The UI projects completed physical-line alignment onto Git hunks only when it accounts for every visible old and new source side; otherwise the literal Git split is retained. revui never parses Difftastic's ANSI display and never delegates its Git snapshot to `diff.external`.
 
 Parser-specific trees are projected into a compact private `Atom | List` representation. Nodes retain original byte ranges but omit formatting whitespace from identity. Recursive fingerprints find unique unchanged subtrees before a bounded weighted-LCS matcher examines the unresolved gaps; punctuation receives less matching weight than identifiers and literals. Matching is deliberately order-sensitive, so reordered syntax remains a visible removal and addition. Parse size and node budgets fail visibly into the token adapter rather than blocking the TUI.
 
 AST plans may also contain source-preserving layout blocks. Each block contains confidently related structural owners—such as the same import or declaration—with already-aligned virtual rows, confidence, role, and original byte ranges. A uniquely identical JSX subtree can also act as an identity-only anchor, allowing unchanged markup to stay aligned when conditional branches or parent wrappers are inserted around it; JSX is never paired speculatively by role. Exact owners score 100, one-to-one same-role replacements score 70, and a contiguous same-role one-to-many or many-to-one composite scores 50. Owner discovery and correspondence are private semantic implementation details; the UI only projects completed blocks onto Git rows. Reordered, duplicate, mixed-role, and otherwise ambiguous owners produce no block and therefore remain in the literal Git layout. This fallback policy is an interface invariant rather than a renderer heuristic.
 
-Virtual rows copy source tokens verbatim and replace only whitespace between structurally known delimiters. Expanded destructured bindings canonically join `=` to their initializer, preventing an incidental source line break there from appearing as a change. A joined virtual row retains coverage for every physical source line it spans, so fallback, navigation, and copying remain lossless. Layouts never enter the repository snapshot or clipboard path. `internal/ui` performs no structural matching, similarity scoring, or ownership inference; it deterministically projects completed blocks and leaves all other rows untouched. A confidence-100 block may cross raw change groups when Git has paired identical punctuation from different syntax nodes as context; projection is accepted only when every old and new source-side row remains covered. Lower-confidence blocks stay within contiguous Git change slices. Normalization therefore still applies when only a nested array, destructuring pattern, argument list, or JSX subtree changed position inside a larger edit.
+Virtual rows copy source tokens verbatim and replace only whitespace between structurally known delimiters. Parser selection, delimiter roles, and safe owner strategies live in declarative grammar profiles; the parser, matcher, source mapper, and renderer remain language-neutral. Expanded ECMAScript destructured bindings canonically join `=` to their initializer, preventing an incidental source line break there from appearing as a change. A joined virtual row retains coverage for every physical source line it spans, so fallback, navigation, and copying remain lossless. Layouts never enter the repository snapshot or clipboard path. `internal/ui` performs no structural matching, similarity scoring, or ownership inference; it deterministically projects completed blocks and leaves all other rows untouched. A confidence-100 block may cross raw change groups when Git has paired identical punctuation from different syntax nodes as context; projection is accepted only when every old and new source-side row remains covered. Lower-confidence blocks stay within contiguous Git change slices. Normalization therefore still applies when only a nested collection, binding, argument list, or JSX subtree changed position inside a larger edit.
 
 The UI schedules semantic work as a Bubble Tea command. Selecting another file, refreshing the repository, disabling the feature, or exiting cancels obsolete work; results carry snapshot, file, and request identities so late messages cannot mutate the current view. Only the final range-to-line projection lives in `internal/ui`. Rendering and scrolling never parse source.
 
 `internal/config` owns versioned user-wide display preferences. `internal/review` separately owns repository/branch reviewed-file fingerprints under Git metadata. Both write atomically with user-only permissions.
 
-`internal/watcher` converts noisy filesystem activity into debounced refresh events. The UI owns its lifecycle and cancels in-flight repository operations on replacement or exit.
+`internal/watcher` converts noisy filesystem activity into debounced refresh events behind a small platform backend. Linux and other supported Unix builds use fsnotify; CGO-enabled macOS builds use one recursive FSEvents stream because fsnotify's kqueue emulation opens descriptors for every entry in a watched directory. Non-CGO macOS builds fail closed to manual refresh rather than risk exhausting the system file table. The UI owns the watcher lifecycle and cancels in-flight repository operations on replacement or exit.
 
 `internal/ui` coordinates Bubble Tea messages while pane-specific state remains grouped by responsibility. Repository snapshots are replaced as a whole; navigation never observes a partially refreshed diff.
 
@@ -58,6 +61,7 @@ The UI schedules semantic work as a Bubble Tea command. Selecting another file, 
 - Every mouse workflow has a keyboard equivalent.
 - Scrolling performs no Git, filesystem, syntax-highlighting, or tree-rebuild work.
 - Search and refresh results are ignored when superseded.
+- A macOS repository watcher uses a bounded number of file descriptors independent of repository size and releases them on close.
 - Semantic analysis is cancellable, never blocks rendering, and can only annotate the snapshot that requested it.
 - Normalized rows are explicitly labeled, reversible, and preserve an origin mapping to literal source.
 - Color reinforces meaning but never carries it alone.
@@ -66,7 +70,7 @@ The UI schedules semantic work as a Bubble Tea command. Selecting another file, 
 
 Add behavior behind an existing interface when possible. Introduce a new seam only when it isolates a volatile dependency or has at least two real adapters—for example Tree-sitter/token semantic analysis or production/test Git execution. Avoid exposing parser trees, subprocess details, or renderer bookkeeping to the coordinator.
 
-New semantic languages belong in adapter files inside `internal/semantic`. An adapter must own parser lifecycle, reject syntax-error trees, honor cancellation between expensive phases, and emit source byte ranges only. Do not pass parser nodes into the UI. Add grammars deliberately: each one increases binary size and release complexity, so a language needs representative fixtures and a measurable review-quality improvement before becoming a dependency.
+New built-in semantic languages need an official or actively maintained Tree-sitter Go binding, an extension mapping, a declarative grammar profile, and analyzer-level fixtures. The generic adapter owns parser lifecycle, rejects syntax-error trees, honors cancellation between expensive phases, and emits source byte ranges only. Do not pass parser nodes into the UI. Add grammars deliberately: each one increases binary size and release complexity, so a language needs representative fixtures and a measurable review-quality improvement before becoming a dependency.
 
 ### Semantic dependency choice
 

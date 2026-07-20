@@ -124,8 +124,10 @@ func newModel(repo *gitrepo.Repository, preferences preferenceStore, reviews rev
 		renderCache:      &renderCache{},
 		diffDisplay:      &diffDisplayCache{},
 		normalizedSplit:  &normalizedSplitCache{},
-		semantic:         semanticAnalysisState{analyzer: semantic.New(8), file: -1},
-		preferencesPath:  preferencesPath,
+		semantic: semanticAnalysisState{
+			analyzer: semantic.New(8), difftasticAnalyzer: semantic.NewDifftastic(8), file: -1,
+		},
+		preferencesPath: preferencesPath,
 	}
 	m.applyPreferences(loadedPreferences)
 	m.rebuildTreeNodes()
@@ -221,7 +223,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.ensureSemanticAnalysis()
 	case semanticResultMsg:
-		m.applySemanticResult(msg)
+		if m.applySemanticResult(msg) {
+			// Structural split results replace the topology of several rows at
+			// once. Force one complete repaint so the terminal renderer cannot
+			// mistake the new left/right cells for a vertically scrolled region.
+			return m, tea.ClearScreen
+		}
 		return m, nil
 	case repositorySearchMsg:
 		if m.mode != searchingRepository || !m.repoSearching || msg.query != m.input || msg.id != m.searchID {
@@ -426,17 +433,25 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.persistPreferences()
 	case "e":
 		position := m.captureSplitLayoutPosition()
-		m.semanticReflow = !m.semanticReflow
-		if m.semanticReflow {
-			m.status = "Experimental semantic highlighting enabled; analyzing source."
-		} else {
+		if m.difftasticMode {
+			m.difftasticMode = false
 			m.normalizedLayout = false
-			m.status = "Standard intraline highlighting enabled."
+			m.semanticReflow = true
+			m.status = "Built-in semantic highlighting enabled; analyzing source."
+		} else {
+			m.semanticReflow = !m.semanticReflow
+			if m.semanticReflow {
+				m.status = "Experimental semantic highlighting enabled; analyzing source."
+			} else {
+				m.normalizedLayout = false
+				m.status = "Standard intraline highlighting enabled."
+			}
 		}
 		m.restoreSplitLayoutPosition(position)
 		m.persistPreferences()
 	case "n":
 		position := m.captureSplitLayoutPosition()
+		m.difftasticMode = false
 		m.normalizedLayout = !m.normalizedLayout
 		if m.normalizedLayout {
 			m.semanticReflow = true
@@ -448,6 +463,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.status = "Raw source layout restored."
+		}
+		m.restoreSplitLayoutPosition(position)
+		m.persistPreferences()
+	case "d":
+		position := m.captureSplitLayoutPosition()
+		m.difftasticMode = !m.difftasticMode
+		m.normalizedLayout = false
+		if m.difftasticMode {
+			m.semanticReflow = true
+			m.view = split
+			m.status = "Experimental Difftastic split enabled; analyzing source."
+		} else {
+			m.semanticReflow = false
+			m.status = "Difftastic disabled; raw split restored."
 		}
 		m.restoreSplitLayoutPosition(position)
 		m.persistPreferences()
@@ -942,6 +971,12 @@ func (m *Model) applyPreferences(preferences config.Preferences) {
 	m.ignoreWhitespace = preferences.IgnoreWhitespace
 	m.semanticReflow = preferences.SemanticReflow
 	m.normalizedLayout = preferences.NormalizedLayout
+	m.difftasticMode = preferences.DifftasticMode
+	if m.difftasticMode {
+		m.semanticReflow = true
+		m.normalizedLayout = false
+		m.view = split
+	}
 	if m.normalizedLayout {
 		m.semanticReflow = true
 		m.view = split
@@ -957,6 +992,7 @@ func (m *Model) persistPreferences() {
 		IgnoreWhitespace: m.ignoreWhitespace,
 		SemanticReflow:   m.semanticReflow,
 		NormalizedLayout: m.normalizedLayout,
+		DifftasticMode:   m.difftasticMode,
 	}
 	if m.fileLayout == treeFiles {
 		preferences.FileLayout = "tree"

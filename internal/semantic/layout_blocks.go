@@ -7,17 +7,18 @@ import (
 )
 
 type layoutOwner struct {
-	key, role string
-	span      Range
-	lines     []VirtualLine
+	key, role    string
+	span         Range
+	lines        []VirtualLine
+	identityOnly bool
 }
 
 // buildLayout is the sole structural-layout policy. It emits monotonic exact
 // owner pairs and conservative same-role composites. Anything else is omitted
 // and therefore remains a literal Git diff in the renderer.
-func buildLayout(oldRoot, newRoot *syntaxNode, oldLines, newLines []VirtualLine) *Layout {
-	oldOwners := collectLayoutOwners(oldRoot, oldLines)
-	newOwners := collectLayoutOwners(newRoot, newLines)
+func buildLayout(oldRoot, newRoot *syntaxNode, oldLines, newLines []VirtualLine, profile layoutProfile) *Layout {
+	oldOwners := collectLayoutOwners(oldRoot, oldLines, profile)
+	newOwners := collectLayoutOwners(newRoot, newLines, profile)
 	pairs := pairLayoutOwners(oldOwners, newOwners)
 	if len(pairs) == 0 {
 		return &Layout{}
@@ -36,36 +37,18 @@ func buildLayout(oldRoot, newRoot *syntaxNode, oldLines, newLines []VirtualLine)
 	return &Layout{Blocks: blocks}
 }
 
-func collectLayoutOwners(root *syntaxNode, lines []VirtualLine) []layoutOwner {
+func collectLayoutOwners(root *syntaxNode, lines []VirtualLine, profile layoutProfile) []layoutOwner {
 	var candidates []layoutOwner
 	var walk func(*syntaxNode)
 	walk = func(node *syntaxNode) {
 		if node == nil {
 			return
 		}
-		switch node.role {
-		case "import_statement":
-			if module := moduleSpecifier(node); module != "" {
-				candidates = append(candidates, layoutOwner{key: node.role + "\x00" + module, role: node.role, span: node.span})
+		if rule, ok := profile.owners[node.role]; ok {
+			owner := layoutOwnerForNode(node, rule, profile)
+			if owner.key != "" || rule.allowUnkeyed {
+				candidates = append(candidates, owner)
 			}
-		case "export_statement":
-			if module := moduleSpecifier(node); module != "" {
-				candidates = append(candidates, layoutOwner{key: node.role + "\x00" + module, role: node.role, span: node.span})
-			} else if owner := directExportedLexicalOwner(node); owner != "" {
-				// Keep the `export` prefix attached to exported const/let declarations.
-				// Exported functions are deliberately not owners: their body is too
-				// broad and is handled by its nested declaration owners instead.
-				candidates = append(candidates, layoutOwner{key: node.role + "\x00" + owner, role: node.role, span: node.span})
-			}
-		case "lexical_declaration":
-			if owner := lexicalDeclarationOwner(node); owner != "" {
-				candidates = append(candidates, layoutOwner{key: owner, role: node.role, span: node.span})
-			}
-		case "jsx_self_closing_element", "jsx_element":
-			// Exact parser fingerprints let an unchanged JSX subtree remain
-			// aligned when conditional branches or parent wrappers are inserted
-			// around it. JSX owners never participate in speculative matching.
-			candidates = append(candidates, layoutOwner{key: node.role + "\x00" + node.fingerprint, role: node.role, span: node.span})
 		}
 		for _, child := range node.children {
 			walk(child)
@@ -81,7 +64,7 @@ func collectLayoutOwners(root *syntaxNode, lines []VirtualLine) []layoutOwner {
 		for index := range candidates {
 			owner := candidates[index]
 			if line.Start >= owner.span.Start && line.Start < owner.span.End {
-				if strings.HasPrefix(owner.role, "jsx_") {
+				if owner.identityOnly {
 					// Nested JSX owners need a complete independent line set. A
 					// parent subtree can cross a misleading Git context match even
 					// when its atomic children cannot.
@@ -112,6 +95,101 @@ func collectLayoutOwners(root *syntaxNode, lines []VirtualLine) []layoutOwner {
 		return owners[i].span.End > owners[j].span.End
 	})
 	return owners
+}
+
+func layoutOwnerForNode(node *syntaxNode, rule layoutOwnerRule, profile layoutProfile) layoutOwner {
+	owner := layoutOwner{role: node.role, span: node.span, identityOnly: rule.kind == ownerIdentity}
+	switch rule.kind {
+	case ownerBinding:
+		owner.key = bindingOwnerKey(node, rule.bindingContainers)
+	case ownerECMADeclaration:
+		owner.key = lexicalDeclarationOwner(node)
+	case ownerModule:
+		owner.key = moduleOwnerKey(node, profile.moduleLiteralRoles)
+	case ownerECMAExport:
+		module := moduleSpecifier(node)
+		if module != "" {
+			owner.key = node.role + "\x00" + module
+		} else if exported := directExportedLexicalOwner(node); exported != "" {
+			// Keep the export prefix attached to exported const/let declarations.
+			// Exported functions remain deliberately unowned because their body is
+			// too broad; nested declaration owners handle local normalization.
+			owner.key = node.role + "\x00" + exported
+		}
+	case ownerSingleton:
+		owner.key = node.role
+	case ownerIdentity:
+		owner.key = node.role + "\x00" + node.fingerprint
+	}
+	if owner.key != "" && rule.kind != ownerECMADeclaration && rule.kind != ownerECMAExport && rule.kind != ownerSingleton && rule.kind != ownerIdentity {
+		owner.key = node.role + "\x00" + owner.key
+	}
+	return owner
+}
+
+func bindingOwnerKey(node *syntaxNode, containers map[string]bool) string {
+	if len(containers) > 0 {
+		if container := firstNodeWithRole(node, containers); container != nil {
+			return firstPlainIdentifier(container)
+		}
+		return ""
+	}
+	return firstPlainIdentifier(node)
+}
+
+func firstNodeWithRole(node *syntaxNode, wanted map[string]bool) *syntaxNode {
+	if node == nil {
+		return nil
+	}
+	if wanted[node.role] {
+		return node
+	}
+	for _, child := range node.children {
+		if found := firstNodeWithRole(child, wanted); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func firstPlainIdentifier(node *syntaxNode) string {
+	if node == nil {
+		return ""
+	}
+	if node.kind == atomNode && (node.role == "identifier" || node.role == "field_identifier" || node.role == "constant") {
+		return node.content
+	}
+	for _, child := range node.children {
+		if identifier := firstPlainIdentifier(child); identifier != "" {
+			return identifier
+		}
+	}
+	return ""
+}
+
+func moduleOwnerKey(node *syntaxNode, literalRoles map[string]bool) string {
+	if module := moduleSpecifier(node); module != "" {
+		return module
+	}
+	if literal := firstAtomicContent(node, literalRoles); literal != "" {
+		return literal
+	}
+	return firstPlainIdentifier(node)
+}
+
+func firstAtomicContent(node *syntaxNode, wanted map[string]bool) string {
+	if node == nil {
+		return ""
+	}
+	if node.kind == atomNode && wanted[node.role] {
+		return node.content
+	}
+	for _, child := range node.children {
+		if content := firstAtomicContent(child, wanted); content != "" {
+			return content
+		}
+	}
+	return ""
 }
 
 type layoutOwnerPair struct {
@@ -176,7 +254,7 @@ func sameLayoutOwnerRole(oldOwners, newOwners []layoutOwner) bool {
 	// JSX layout owners are identity anchors only. Similar-looking elements are
 	// too easy to pair incorrectly, so they never participate in speculative
 	// same-role replacement or composite matching.
-	if strings.HasPrefix(role, "jsx_") {
+	if oldOwners[0].identityOnly || newOwners[0].identityOnly {
 		return false
 	}
 	for _, owner := range oldOwners {

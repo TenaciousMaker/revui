@@ -42,6 +42,7 @@ type contentPaneState struct {
 	ignoreWhitespace bool
 	semanticReflow   bool
 	normalizedLayout bool
+	difftasticMode   bool
 }
 
 // searchState owns both changed-file fuzzy search and repository text search.

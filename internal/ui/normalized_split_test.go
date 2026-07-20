@@ -2,10 +2,13 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/TenaciousMaker/revui/internal/diff"
 	"github.com/TenaciousMaker/revui/internal/gitrepo"
@@ -27,6 +30,147 @@ func TestNormalizedToggleEnablesSemanticSplitAndSemanticOffRestoresRaw(t *testin
 	m = updated.(Model)
 	if m.normalizedLayout || m.semanticReflow {
 		t.Fatalf("semantic off left normalized mode enabled: normalized=%v semantic=%v", m.normalizedLayout, m.semanticReflow)
+	}
+}
+
+func TestDifftasticSplitProjectsAlignmentWithoutHidingGitRows(t *testing.T) {
+	oldSource := []byte("import {\n  type ReactNode,\n  useEffect,\n  useLayoutEffect,\n  useMemo,\n} from 'react';\nconst value = 1;\n")
+	newSource := []byte("import { type ReactNode, useEffect, useMemo } from 'react';\nconst value = 1;\n")
+	lines := []diff.Line{
+		{Kind: diff.Meta, Hunk: 0, Text: "@@ -1,7 +1,2 @@", OriginalIndex: 0},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 1, Text: "import {", OriginalIndex: 1},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 2, Text: "  type ReactNode,", OriginalIndex: 2},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 3, Text: "  useEffect,", OriginalIndex: 3},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 4, Text: "  useLayoutEffect,", OriginalIndex: 4},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 5, Text: "  useMemo,", OriginalIndex: 5},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 6, Text: "} from 'react';", OriginalIndex: 6},
+		{Kind: diff.Addition, Hunk: 0, NewNumber: 1, Text: "import { type ReactNode, useEffect, useMemo } from 'react';", OriginalIndex: 7},
+		{Kind: diff.Context, Hunk: 0, OldNumber: 7, NewNumber: 2, Text: "const value = 1;", OriginalIndex: 8},
+	}
+	alignment := []semantic.LineAlignment{{Old: 1, New: 1}, {Old: 2}, {Old: 3}, {Old: 4}, {Old: 5}, {Old: 6}, {Old: 7, New: 2}}
+	spans := map[int][]textSpan{4: {{start: 2, end: 17}}}
+	rows, ok := buildDifftasticSplitRows(lines, alignment, oldSource, newSource, spans)
+	if !ok {
+		t.Fatal("complete Difftastic alignment was rejected")
+	}
+	if len(rows) != 8 {
+		t.Fatalf("row count = %d, want 8", len(rows))
+	}
+	var removed *splitRow
+	for index := range rows {
+		if rows[index].old != nil && strings.Contains(rows[index].old.Text, "useLayoutEffect") {
+			removed = &rows[index]
+			break
+		}
+	}
+	if removed == nil || removed.old.Kind != diff.Deletion || removed.new != nil {
+		t.Fatalf("removed import row = %#v", removed)
+	}
+	if got := selectedSpanText(removed.old.Text, removed.oldSpans); got != "useLayoutEffect" {
+		t.Fatalf("removed import emphasis = %q", got)
+	}
+	if rows[2].old == nil || rows[2].old.Kind != diff.Context {
+		t.Fatalf("unchanged reformatted import was not neutral: %#v", rows[2])
+	}
+	if rows[len(rows)-1].oldIndex != 8 || rows[len(rows)-1].newIndex != 8 {
+		t.Fatalf("context coverage = %#v", rows[len(rows)-1])
+	}
+
+	if _, complete := buildDifftasticSplitRows(lines, alignment[:len(alignment)-1], oldSource, newSource, spans); complete {
+		t.Fatal("incomplete alignment was accepted")
+	}
+}
+
+func TestDifftasticSplitClipsLongRightRowsToTheirPane(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	oldLines := []string{
+		"## Week 2026-W30 (Jul 20 - Jul 26)",
+		"",
+		"**[Context]**: Resolve Order and OrderItem through describes.",
+		"## Week 2026-W29 (Jul 13 - Jul 19)",
+	}
+	newLines := []string{
+		"## Week 2026-W30 (Jul 20 - Jul 26)",
+		"",
+		"**[Workspace]**: Priority Accounts stops flagging its full rank-ordered top-N as partial; other list widgets name the row cap in the partial response and keep the surrounding explanation visible.",
+		"**[Context]**: Resolve Order and OrderItem through describes.",
+	}
+	lines := []diff.Line{
+		{Kind: diff.Meta, Hunk: 0, Text: "@@ -1,4 +1,5 @@", OriginalIndex: 0},
+		{Kind: diff.Context, Hunk: 0, OldNumber: 1, NewNumber: 1, Text: oldLines[0], OriginalIndex: 1},
+		{Kind: diff.Context, Hunk: 0, OldNumber: 2, NewNumber: 2, Text: oldLines[1], OriginalIndex: 2},
+		{Kind: diff.Addition, Hunk: 0, NewNumber: 3, Text: newLines[2], OriginalIndex: 3},
+		{Kind: diff.Context, Hunk: 0, OldNumber: 3, NewNumber: 4, Text: oldLines[2], OriginalIndex: 4},
+		{Kind: diff.Context, Hunk: 0, OldNumber: 4, NewNumber: 5, Text: oldLines[3], OriginalIndex: 5},
+	}
+	repo := &gitrepo.Repository{Files: []diff.File{{Path: "CHANGELOG.md", Lines: lines}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus, m.view, m.difftasticMode, m.semanticReflow = focusDiff, split, true, true
+	m.semantic.repo, m.semantic.file, m.semantic.ready = repo, 0, true
+	m.semantic.engine, m.semantic.provider = semantic.EngineDifftastic, difftasticSemantic
+	m.semantic.oldSource = []byte(strings.Join(oldLines, "\n") + "\n")
+	m.semantic.newSource = []byte(strings.Join(newLines, "\n") + "\n")
+	m.semantic.spans = map[int][]textSpan{3: {{start: 0, end: len([]rune(newLines[2]))}}}
+	m.semantic.alignment = []semantic.LineAlignment{
+		{Old: 1, New: 1},
+		{Old: 2, New: 2},
+		{New: 3},
+		{Old: 3, New: 4},
+		{Old: 4, New: 5},
+	}
+
+	const width = 120
+	rendered := m.renderSplit(width, 8)
+	for row, text := range strings.Split(rendered, "\n") {
+		if got := ansi.StringWidth(text); got > width {
+			t.Fatalf("Difftastic split row %d crossed viewport: width %d, want <= %d\n%s", row, got, width, ansi.Strip(rendered))
+		}
+	}
+	plainRows := strings.Split(ansi.Strip(rendered), "\n")
+	addedRow := -1
+	for row, text := range plainRows {
+		if strings.Contains(text, "Priority Accounts") {
+			addedRow = row
+			break
+		}
+	}
+	if addedRow < 0 {
+		t.Fatalf("long added row missing:\n%s", ansi.Strip(rendered))
+	}
+	buffer := uv.NewScreenBuffer(width, len(plainRows))
+	uv.NewStyledString(rendered).Draw(buffer, buffer.Bounds())
+	for column := 0; column < (width-1)/2; column++ {
+		cell := buffer.CellAt(column, addedRow)
+		if cell == nil || cell.Style.Bg == nil {
+			continue
+		}
+		red, green, blue, _ := cell.Style.Bg.RGBA()
+		if got := fmt.Sprintf("#%02X%02X%02X", red>>8, green>>8, blue>>8); got == addedLineBackground {
+			t.Fatalf("right-side addition bled into left pane at row %d column %d:\n%s", addedRow, column, ansi.Strip(rendered))
+		}
+	}
+
+	m.width, m.height = 204, 65
+	for row, text := range strings.Split(m.View().Content, "\n") {
+		if got := ansi.StringWidth(text); got > m.width {
+			t.Fatalf("full Difftastic view row %d crossed terminal: width %d, want <= %d\n%s", row, got, m.width, ansi.Strip(m.View().Content))
+		}
+	}
+}
+
+func TestSplitCellUsesNumberForRenderedSide(t *testing.T) {
+	repo := &gitrepo.Repository{Files: []diff.File{{Path: "value.ts"}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := diff.Line{Kind: diff.Context, NewNumber: 12, Text: "new-only neutral alignment"}
+	rendered := ansi.Strip(m.renderSplitCellAt(&line, -1, 40, false, false, nil, true, nil))
+	if !strings.Contains(rendered, " 12   new-only") {
+		t.Fatalf("new-side line number missing:\n%s", rendered)
 	}
 }
 

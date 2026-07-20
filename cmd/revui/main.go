@@ -34,7 +34,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	base := flags.String("base", "", "base branch or revision to review against")
 	showVersion := flags.Bool("version", false, "print the revui version")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "revui — understand a branch before it becomes a pull request")
+		_, _ = fmt.Fprintln(stderr, "revui — review your PR before it's a PR")
 		_, _ = fmt.Fprintln(stderr, "\nUsage:\n  revui [--base <branch>]\n\nOptions:")
 		flags.PrintDefaults()
 	}

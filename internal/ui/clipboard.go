@@ -68,7 +68,7 @@ func (m Model) clipboardText() (string, int) {
 
 func (m Model) clipboardSelection() (string, int, sourceRange, sourceRange) {
 	if text := m.selectedText; text != "" {
-		if m.normalizedLayout && m.view == split && m.sourcePath == "" {
+		if (m.normalizedLayout || m.difftasticMode) && m.view == split && m.sourcePath == "" {
 			return m.normalizedMouseClipboardSelection()
 		}
 		branchLines, baseLines := m.mouseSelectionRanges()

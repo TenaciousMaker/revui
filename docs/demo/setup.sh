@@ -32,7 +32,7 @@ func main() {
 	fmt.Println("review before request")
 }
 EOF
-printf '# revui\n\nUnderstand a branch before it becomes a pull request.\n' > README.md
+printf "# revui\n\nReview your PR before it's a PR.\n" > README.md
 printf 'Local review state belongs in Git metadata.\n' > docs/design.txt
 git add .
 git commit -q -m base

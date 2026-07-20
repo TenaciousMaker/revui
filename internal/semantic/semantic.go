@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"sort"
 	"sync"
 )
@@ -16,8 +17,9 @@ import (
 type Engine string
 
 const (
-	EngineToken Engine = "TOKEN*"
-	EngineAST   Engine = "AST"
+	EngineToken      Engine = "TOKEN*"
+	EngineAST        Engine = "AST"
+	EngineDifftastic Engine = "DIFFT"
 
 	maxSemanticSourceBytes = 2 << 20
 )
@@ -86,6 +88,14 @@ type Layout struct {
 	Blocks []LayoutBlock
 }
 
+// LineAlignment is a physical source-line correspondence. Line numbers are
+// one-based; zero means that side is absent. External structural engines can
+// provide this without exposing their parser or display representation.
+type LineAlignment struct {
+	Old int
+	New int
+}
+
 type Input struct {
 	Path string
 	Old  []byte
@@ -101,6 +111,7 @@ type Plan struct {
 	New             []Range
 	Correspondences []Correspondence
 	Layout          *Layout
+	Alignment       []LineAlignment
 	Warning         string
 }
 
@@ -167,6 +178,20 @@ func New(capacity int) Analyzer {
 	}
 }
 
+// NewDifftastic returns an analyzer backed by the optional local `difft`
+// executable. Source is exchanged through private temporary files because
+// difftastic does not accept two source buffers on stdin.
+func NewDifftastic(capacity int) Analyzer {
+	return newDifftasticAnalyzer(capacity, execDifftasticRunner{})
+}
+
+func newDifftasticAnalyzer(capacity int, runner difftasticRunner) Analyzer {
+	return &analyzer{
+		ast: difftasticAdapter{runner: runner}, capacity: capacity,
+		cache: make(map[string]*list.Element), lru: list.New(),
+	}
+}
+
 func (a *analyzer) Analyze(ctx context.Context, input Input) (Plan, error) {
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
@@ -183,6 +208,12 @@ func (a *analyzer) Analyze(ctx context.Context, input Input) (Plan, error) {
 			return plan, nil
 		}
 		astErr = err
+	}
+	if a.token == nil {
+		if astErr != nil {
+			return Plan{}, astErr
+		}
+		return Plan{}, errors.New("semantic analyzer does not support this file")
 	}
 	plan, err := a.token.analyze(ctx, input)
 	if err != nil {

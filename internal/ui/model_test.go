@@ -521,6 +521,27 @@ func TestViewPreferencesRestoreAndUpdateAcrossLaunches(t *testing.T) {
 	}
 }
 
+func TestDifftasticPreferenceRestoresCoherentSplitMode(t *testing.T) {
+	root := t.TempDir()
+	preferencesPath := filepath.Join(root, "preferences.json")
+	if err := config.Save(preferencesPath, config.Preferences{
+		DiffView: "unified", SemanticReflow: false, NormalizedLayout: true, DifftasticMode: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := &gitrepo.Repository{
+		Root: root, ReviewPath: filepath.Join(root, "review.json"), PreferencesPath: preferencesPath,
+		Files: []diff.File{{Path: "service.go", Lines: []diff.Line{{Kind: diff.Addition, Text: "new", NewNumber: 1}}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.difftasticMode || !m.semanticReflow || m.normalizedLayout || m.view != split {
+		t.Fatalf("Difftastic preferences were incoherent: difft=%v semantic=%v normalized=%v view=%v", m.difftasticMode, m.semanticReflow, m.normalizedLayout, m.view)
+	}
+}
+
 func TestWhitespaceFilterAppliesOnlyToRawDiff(t *testing.T) {
 	lines := []diff.Line{
 		{Kind: diff.Meta, Text: "@@ -1 +1 @@", Hunk: 0},

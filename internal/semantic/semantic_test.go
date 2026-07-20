@@ -295,6 +295,169 @@ func TestTreeSitterLayoutKeepsEmptyCollectionsInline(t *testing.T) {
 	}
 }
 
+func TestTreeSitterSupportsBuiltInLanguages(t *testing.T) {
+	adapter := newTreeSitterAdapter()
+	paths := []string{
+		"component.ts", "component.tsx", "component.js", "component.jsx",
+		"main.go", "settings.py", "main.rs", "Settings.java", "settings.json",
+		"settings.c", "settings.cpp", "settings.rb", "Gemfile",
+	}
+	if !adapter.supports("component.ts") {
+		t.Skip("tree-sitter unavailable without cgo")
+	}
+	for _, path := range paths {
+		if !adapter.supports(path) {
+			t.Errorf("tree-sitter does not support %q", path)
+		}
+	}
+	for _, path := range []string{"service.cls", "settings.jsonc"} {
+		if adapter.supports(path) {
+			t.Fatalf("%q must use the token fallback until a matching Go grammar binding is available", path)
+		}
+	}
+}
+
+func TestTreeSitterNormalizesBuiltInLanguages(t *testing.T) {
+	if !newTreeSitterAdapter().supports("component.ts") {
+		t.Skip("tree-sitter unavailable without cgo")
+	}
+	tests := []struct {
+		name, path      string
+		oldSource       string
+		newSource       string
+		oldToken        string
+		newToken        string
+		normalizedStart string
+	}{
+		{
+			name: "JavaScript", path: "settings.js",
+			oldSource: "const settings = { retries: 3, timeout: oldTimeout };\n",
+			newSource: "const settings = {\n  retries: 3,\n  timeout: newTimeout,\n};\n",
+			oldToken:  "oldTimeout", newToken: "newTimeout", normalizedStart: "const settings = {\n",
+		},
+		{
+			name: "Go", path: "settings.go",
+			oldSource: "package settings\nvar settings = Config{Retries: 3, Timeout: oldTimeout}\n",
+			newSource: "package settings\nvar settings = Config{\n  Retries: 3,\n  Timeout: newTimeout,\n}\n",
+			oldToken:  "oldTimeout", newToken: "newTimeout", normalizedStart: "var settings = Config{\n",
+		},
+		{
+			name: "Python", path: "settings.py",
+			oldSource: "settings = {\"retries\": 3, \"timeout\": old_timeout}\n",
+			newSource: "settings = {\n  \"retries\": 3,\n  \"timeout\": new_timeout,\n}\n",
+			oldToken:  "old_timeout", newToken: "new_timeout", normalizedStart: "settings = {\n",
+		},
+		{
+			name: "Rust", path: "settings.rs",
+			oldSource: "let settings = Config { retries: 3, timeout: old_timeout };\n",
+			newSource: "let settings = Config {\n  retries: 3,\n  timeout: new_timeout,\n};\n",
+			oldToken:  "old_timeout", newToken: "new_timeout", normalizedStart: "let settings = Config {\n",
+		},
+		{
+			name: "Java", path: "Settings.java",
+			oldSource: "class Settings {\n  void load() {\n    int[] settings = new int[] { 3, oldTimeout };\n  }\n}\n",
+			newSource: "class Settings {\n  void load() {\n    int[] settings = new int[] {\n      3,\n      newTimeout,\n    };\n  }\n}\n",
+			oldToken:  "oldTimeout", newToken: "newTimeout", normalizedStart: "int[] settings = new int[] {\n",
+		},
+		{
+			name: "JSON", path: "settings.json",
+			oldSource: "{\"retries\":3,\"timeout\":\"old\"}\n",
+			newSource: "{\n  \"retries\": 3,\n  \"timeout\": \"new\"\n}\n",
+			oldToken:  "\"old\"", newToken: "\"new\"", normalizedStart: "{\n",
+		},
+		{
+			name: "C", path: "settings.c",
+			oldSource: "Config settings = {3, old_timeout};\n",
+			newSource: "Config settings = {\n  3,\n  new_timeout,\n};\n",
+			oldToken:  "old_timeout", newToken: "new_timeout", normalizedStart: "Config settings = {\n",
+		},
+		{
+			name: "C++", path: "settings.cpp",
+			oldSource: "Config settings{3, old_timeout};\n",
+			newSource: "Config settings{\n  3,\n  new_timeout,\n};\n",
+			oldToken:  "old_timeout", newToken: "new_timeout", normalizedStart: "Config settings{\n",
+		},
+		{
+			name: "Ruby", path: "settings.rb",
+			oldSource: "settings = [3, old_timeout]\n",
+			newSource: "settings = [\n  3,\n  new_timeout,\n]\n",
+			oldToken:  "old_timeout", newToken: "new_timeout", normalizedStart: "settings = [\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := New(0).Analyze(context.Background(), Input{
+				Path: test.path, Old: []byte(test.oldSource), New: []byte(test.newSource),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Engine != EngineAST {
+				t.Fatalf("engine = %q, want AST; warning: %s", plan.Engine, plan.Warning)
+			}
+			if got := selected([]byte(test.oldSource), plan.ChangedRanges(OldSide)); got != test.oldToken {
+				t.Fatalf("old semantic change = %q, want %q", got, test.oldToken)
+			}
+			if got := selected([]byte(test.newSource), plan.ChangedRanges(NewSide)); got != test.newToken {
+				t.Fatalf("new semantic change = %q, want %q", got, test.newToken)
+			}
+			if plan.Layout == nil || len(plan.Layout.Blocks) == 0 {
+				t.Fatal("AST plan has no normalized layout")
+			}
+			if got := layoutText(plan.Layout, NewSide); !strings.Contains(got, test.normalizedStart) {
+				t.Fatalf("normalized layout does not contain %q:\n%s", test.normalizedStart, got)
+			}
+			for _, block := range plan.Layout.Blocks {
+				for _, row := range block.Rows {
+					for side, line := range map[string]*VirtualLine{"old": row.Old, "new": row.New} {
+						if line != nil && strings.TrimSpace(line.Text) != "" && (line.Start < 0 || line.End <= line.Start) {
+							t.Fatalf("%s normalized row lost its source mapping: %#v", side, line)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTreeSitterIgnoresFormattingReflowAcrossBuiltInLanguages(t *testing.T) {
+	if !newTreeSitterAdapter().supports("component.ts") {
+		t.Skip("tree-sitter unavailable without cgo")
+	}
+	tests := []struct {
+		name, path, compact, expanded string
+	}{
+		{"JavaScript", "settings.js", "const settings = { retries: 3, timeout: value };\n", "const settings = {\n  retries: 3,\n  timeout: value,\n};\n"},
+		{"Go", "settings.go", "package settings\nvar settings = Config{Retries: 3, Timeout: value}\n", "package settings\nvar settings = Config{\n  Retries: 3,\n  Timeout: value,\n}\n"},
+		{"Python", "settings.py", "settings = {\"retries\": 3, \"timeout\": value}\n", "settings = {\n  \"retries\": 3,\n  \"timeout\": value,\n}\n"},
+		{"Rust", "settings.rs", "let settings = Config { retries: 3, timeout: value };\n", "let settings = Config {\n  retries: 3,\n  timeout: value,\n};\n"},
+		{"Java", "Settings.java", "class Settings {\n  int[] values = new int[] { 3, value };\n}\n", "class Settings {\n  int[] values = new int[] {\n    3,\n    value,\n  };\n}\n"},
+		{"JSON", "settings.json", "{\"retries\":3,\"timeout\":\"value\"}\n", "{\n  \"retries\": 3,\n  \"timeout\": \"value\"\n}\n"},
+		{"C", "settings.c", "Config settings = {3, value};\n", "Config settings = {\n  3,\n  value,\n};\n"},
+		{"C++", "settings.cpp", "Config settings{3, value};\n", "Config settings{\n  3,\n  value,\n};\n"},
+		{"Ruby", "settings.rb", "settings = [3, value]\n", "settings = [\n  3,\n  value,\n]\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := New(0).Analyze(context.Background(), Input{
+				Path: test.path, Old: []byte(test.compact), New: []byte(test.expanded),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Engine != EngineAST {
+				t.Fatalf("engine = %q, want AST; warning: %s", plan.Engine, plan.Warning)
+			}
+			if got := plan.ChangedRanges(OldSide); len(got) != 0 {
+				t.Fatalf("format-only old ranges = %#v", got)
+			}
+			if got := plan.ChangedRanges(NewSide); len(got) != 0 {
+				t.Fatalf("format-only new ranges = %#v", got)
+			}
+		})
+	}
+}
+
 func TestAnalyzerFallsBackWhenTypeScriptIsTemporarilyInvalid(t *testing.T) {
 	if !newTreeSitterAdapter().supports("editing.ts") {
 		t.Skip("tree-sitter unavailable without cgo")

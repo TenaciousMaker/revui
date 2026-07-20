@@ -5,11 +5,9 @@ package semantic
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	treesitter "github.com/tree-sitter/go-tree-sitter"
-	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 type treeSitterAdapter struct{}
@@ -21,12 +19,8 @@ const (
 func newTreeSitterAdapter() adapter { return treeSitterAdapter{} }
 
 func (treeSitterAdapter) supports(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".ts", ".tsx", ".mts", ".cts":
-		return true
-	default:
-		return false
-	}
+	_, ok := treeSitterLanguageForPath(path)
+	return ok
 }
 
 func (treeSitterAdapter) analyze(ctx context.Context, input Input) (Plan, error) {
@@ -36,18 +30,18 @@ func (treeSitterAdapter) analyze(ctx context.Context, input Input) (Plan, error)
 	if len(input.Old)+len(input.New) > maxSemanticSourceBytes {
 		return Plan{}, fmt.Errorf("source exceeds %d MiB semantic budget", maxSemanticSourceBytes>>20)
 	}
-	language := treesitter.NewLanguage(typescript.LanguageTypescript())
-	if strings.EqualFold(filepath.Ext(input.Path), ".tsx") {
-		language = treesitter.NewLanguage(typescript.LanguageTSX())
+	language, ok := treeSitterLanguageForPath(input.Path)
+	if !ok {
+		return Plan{}, fmt.Errorf("unsupported tree-sitter language for %q", input.Path)
 	}
-	oldTree, oldLayout, err := parseTreeSitterSource(ctx, input.Old, language)
+	oldTree, oldLayout, err := parseTreeSitterSource(ctx, input.Old, language.language, language.profile)
 	if err != nil {
 		return Plan{}, fmt.Errorf("parse old source: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
-	newTree, newLayout, err := parseTreeSitterSource(ctx, input.New, language)
+	newTree, newLayout, err := parseTreeSitterSource(ctx, input.New, language.language, language.profile)
 	if err != nil {
 		return Plan{}, fmt.Errorf("parse new source: %w", err)
 	}
@@ -57,11 +51,11 @@ func (treeSitterAdapter) analyze(ctx context.Context, input Input) (Plan, error)
 	}
 	return Plan{
 		Engine: EngineAST, Old: oldRanges, New: newRanges,
-		Correspondences: pairs, Layout: buildLayout(oldTree, newTree, oldLayout, newLayout),
+		Correspondences: pairs, Layout: buildLayout(oldTree, newTree, oldLayout, newLayout, language.profile),
 	}, nil
 }
 
-func parseTreeSitterSource(ctx context.Context, source []byte, language *treesitter.Language) (*syntaxNode, []VirtualLine, error) {
+func parseTreeSitterSource(ctx context.Context, source []byte, language *treesitter.Language, profile layoutProfile) (*syntaxNode, []VirtualLine, error) {
 	if len(source) == 0 {
 		root := &syntaxNode{kind: listNode, role: "root"}
 		root.finish()
@@ -82,18 +76,18 @@ func parseTreeSitterSource(ctx context.Context, source []byte, language *treesit
 		return nil, nil, fmt.Errorf("source contains syntax errors")
 	}
 	nodeCount := 0
-	syntaxRoot, err := buildTreeSitterSyntax(ctx, root, source, &nodeCount)
+	syntaxRoot, err := buildTreeSitterSyntax(ctx, root, source, &nodeCount, profile)
 	if err != nil {
 		return nil, nil, err
 	}
 	syntaxRoot.finish()
 	var edits []layoutEdit
-	collectTreeSitterLayoutEdits(root, source, 0, &edits)
+	collectTreeSitterLayoutEdits(root, source, 0, &edits, profile)
 	layout := virtualLinesFromEdits(source, edits)
 	return syntaxRoot, layout, nil
 }
 
-func buildTreeSitterSyntax(ctx context.Context, node *treesitter.Node, source []byte, count *int) (*syntaxNode, error) {
+func buildTreeSitterSyntax(ctx context.Context, node *treesitter.Node, source []byte, count *int, profile layoutProfile) (*syntaxNode, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -116,10 +110,10 @@ func buildTreeSitterSyntax(ctx context.Context, node *treesitter.Node, source []
 		if child == nil || child.EndByte() <= child.StartByte() {
 			continue
 		}
-		if child.Kind() == "," && ignoresTrailingComma(node.Kind()) && isTrailingComma(node, index) {
+		if child.Kind() == "," && ignoresTrailingComma(profile, node.Kind()) && isTrailingComma(node, index) {
 			continue
 		}
-		converted, err := buildTreeSitterSyntax(ctx, child, source, count)
+		converted, err := buildTreeSitterSyntax(ctx, child, source, count, profile)
 		if err != nil {
 			return nil, err
 		}
@@ -128,13 +122,9 @@ func buildTreeSitterSyntax(ctx context.Context, node *treesitter.Node, source []
 	return result, nil
 }
 
-func ignoresTrailingComma(role string) bool {
-	switch role {
-	case "object", "object_pattern", "array", "array_pattern", "arguments", "formal_parameters", "named_imports", "export_clause":
-		return true
-	default:
-		return false
-	}
+func ignoresTrailingComma(profile layoutProfile, role string) bool {
+	_, ok := profile.delimiters[role]
+	return ok
 }
 
 func isTrailingComma(parent *treesitter.Node, comma uint) bool {
@@ -153,14 +143,15 @@ func isTrailingComma(parent *treesitter.Node, comma uint) bool {
 	return false
 }
 
-func collectTreeSitterLayoutEdits(node *treesitter.Node, source []byte, minimumIndent int, edits *[]layoutEdit) {
+func collectTreeSitterLayoutEdits(node *treesitter.Node, source []byte, minimumIndent int, edits *[]layoutEdit, profile layoutProfile) {
 	if node == nil {
 		return
 	}
-	if node.Kind() == "variable_declarator" {
-		appendPatternInitializerLayoutEdit(node, source, edits)
+	if pattern, ok := profile.initializerPatterns[node.Kind()]; ok {
+		appendPatternInitializerLayoutEdit(node, source, edits, pattern)
 	}
-	open, close, target := layoutDelimiters(node.Kind())
+	delimiter, target := profile.delimiters[node.Kind()]
+	open, close := delimiter.open, delimiter.close
 	target = target && layoutHasContent(node, source, open, close)
 	childMinimum := minimumIndent
 	if target {
@@ -191,16 +182,16 @@ func collectTreeSitterLayoutEdits(node *treesitter.Node, source []byte, minimumI
 		childMinimum = base + 2
 	}
 	for index := uint(0); index < node.ChildCount(); index++ {
-		collectTreeSitterLayoutEdits(node.Child(index), source, childMinimum, edits)
+		collectTreeSitterLayoutEdits(node.Child(index), source, childMinimum, edits, profile)
 	}
 }
 
-func appendPatternInitializerLayoutEdit(node *treesitter.Node, source []byte, edits *[]layoutEdit) {
+func appendPatternInitializerLayoutEdit(node *treesitter.Node, source []byte, edits *[]layoutEdit, pattern initializerPattern) {
 	children := make([]*treesitter.Node, node.ChildCount())
 	hasPattern := false
 	for index := range children {
 		children[index] = node.Child(uint(index))
-		if children[index] != nil && (children[index].Kind() == "object_pattern" || children[index].Kind() == "array_pattern") {
+		if children[index] != nil && pattern.patterns[children[index].Kind()] {
 			hasPattern = true
 		}
 	}
@@ -208,7 +199,7 @@ func appendPatternInitializerLayoutEdit(node *treesitter.Node, source []byte, ed
 		return
 	}
 	for index, child := range children {
-		if child == nil || child.Kind() != "=" || index+1 >= len(children) || children[index+1] == nil {
+		if child == nil || !pattern.operators[child.Kind()] || index+1 >= len(children) || children[index+1] == nil {
 			continue
 		}
 		appendInlineWhitespaceLayoutEdit(source, int(child.EndByte()), int(children[index+1].StartByte()), edits)
@@ -232,20 +223,9 @@ func layoutHasContent(node *treesitter.Node, source []byte, open, close string) 
 		}
 	}
 	if contentStart < 0 || contentEnd < contentStart || contentEnd > len(source) {
-		return true
+		return false
 	}
 	return strings.TrimSpace(string(source[contentStart:contentEnd])) != ""
-}
-
-func layoutDelimiters(kind string) (open, close string, ok bool) {
-	switch kind {
-	case "object", "object_pattern", "named_imports", "export_clause":
-		return "{", "}", true
-	case "array", "array_pattern":
-		return "[", "]", true
-	default:
-		return "", "", false
-	}
 }
 
 func appendWhitespaceLayoutEdit(source []byte, start, end, indent int, edits *[]layoutEdit) {

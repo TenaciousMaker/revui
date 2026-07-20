@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -94,6 +95,68 @@ func TestSemanticAnalysisRunsOffRenderPathAndProjectsRanges(t *testing.T) {
 	raw := projectSemanticPlan(lines, plan, oldSource, newSource)
 	if got := selectedSpanText(lines[2].Text, raw[2]); got != "widgetSettings.widgetLimit" {
 		t.Fatalf("raw old projection = %q", got)
+	}
+}
+
+func TestDifftasticToggleSelectsExternalAnalyzerAndForcesSplit(t *testing.T) {
+	oldSource, newSource := []byte("old\n"), []byte("new\n")
+	lines := []diff.Line{
+		{Kind: diff.Meta, Hunk: 0, Text: "@@ -1 +1 @@"},
+		{Kind: diff.Deletion, Hunk: 0, OldNumber: 1, Text: "old"},
+		{Kind: diff.Addition, Hunk: 0, NewNumber: 1, Text: "new"},
+	}
+	repo := &gitrepo.Repository{Root: t.TempDir(), Files: []diff.File{{Path: "value.ts", Lines: lines}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.repositories = stubSemanticRepository{oldSource: oldSource, newSource: newSource}
+	m.semantic.analyzer = stubSemanticAnalyzer{err: errors.New("built-in analyzer should not run")}
+	m.semantic.difftasticAnalyzer = stubSemanticAnalyzer{plan: semantic.Plan{
+		Engine: semantic.EngineDifftastic,
+		Old:    []semantic.Range{{Start: 0, End: 3}}, New: []semantic.Range{{Start: 0, End: 3}},
+		Alignment: []semantic.LineAlignment{{Old: 1, New: 1}},
+	}}
+
+	updated, _ := m.handleKey(tea.KeyPressMsg{Text: "d", Code: 'd'})
+	m = updated.(Model)
+	if !m.difftasticMode || !m.semanticReflow || m.normalizedLayout || m.view != split {
+		t.Fatalf("Difftastic toggle state: difft=%v semantic=%v normalized=%v view=%v", m.difftasticMode, m.semanticReflow, m.normalizedLayout, m.view)
+	}
+	command := m.ensureSemanticAnalysis()
+	if command == nil || m.semantic.provider != difftasticSemantic {
+		t.Fatalf("Difftastic analysis not scheduled: %#v", m.semantic)
+	}
+	updated, repaint := m.Update(command())
+	m = updated.(Model)
+	if !m.semantic.ready || m.semantic.engine != semantic.EngineDifftastic || len(m.semantic.alignment) != 1 {
+		t.Fatalf("Difftastic result not applied: %#v", m.semantic)
+	}
+	if !strings.Contains(m.status, "Difftastic alignment ready") {
+		t.Fatalf("Difftastic status = %q", m.status)
+	}
+	if repaint == nil || fmt.Sprintf("%T", repaint()) != "tea.clearScreenMsg" {
+		t.Fatalf("Difftastic frame replacement did not request a full repaint: %T", repaint)
+	}
+
+	updated, _ = m.handleKey(tea.KeyPressMsg{Text: "d", Code: 'd'})
+	m = updated.(Model)
+	if m.difftasticMode || m.semanticReflow || m.view != split {
+		t.Fatalf("Difftastic did not return to raw split: difft=%v semantic=%v view=%v", m.difftasticMode, m.semanticReflow, m.view)
+	}
+}
+
+func TestDifftasticFailureFallsBackVisibly(t *testing.T) {
+	repo := &gitrepo.Repository{Files: []diff.File{{Path: "value.ts", Lines: []diff.Line{{Kind: diff.Addition, NewNumber: 1, Text: "new"}}}}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.difftasticMode, m.semanticReflow = true, true
+	m.semantic.id, m.semantic.repo, m.semantic.file, m.semantic.provider = 1, repo, 0, difftasticSemantic
+	m.applySemanticResult(semanticResultMsg{id: 1, repo: repo, file: 0, provider: difftasticSemantic, err: errors.New("difft not found")})
+	if m.semantic.ready || !strings.Contains(m.status, "Showing raw split diff") || m.semanticLabel() != "DIFFT!" {
+		t.Fatalf("failure was not visible and safe: state=%#v status=%q label=%q", m.semantic, m.status, m.semanticLabel())
 	}
 }
 

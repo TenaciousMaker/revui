@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"unicode"
@@ -18,26 +19,44 @@ type semanticResultMsg struct {
 	id        uint64
 	repo      *gitrepo.Repository
 	file      int
+	provider  semanticProvider
 	oldSource []byte
 	newSource []byte
 	plan      semantic.Plan
 	err       error
 }
 
+type semanticProvider uint8
+
+const (
+	builtinSemantic semanticProvider = iota
+	difftasticSemantic
+)
+
 type semanticAnalysisState struct {
-	analyzer  semantic.Analyzer
-	cancel    context.CancelFunc
-	id        uint64
-	repo      *gitrepo.Repository
-	file      int
-	loading   bool
-	ready     bool
-	engine    semantic.Engine
-	warning   string
-	spans     map[int][]textSpan
-	layout    *semantic.Layout
-	oldSource []byte
-	newSource []byte
+	analyzer           semantic.Analyzer
+	difftasticAnalyzer semantic.Analyzer
+	cancel             context.CancelFunc
+	id                 uint64
+	repo               *gitrepo.Repository
+	file               int
+	provider           semanticProvider
+	loading            bool
+	ready              bool
+	engine             semantic.Engine
+	warning            string
+	spans              map[int][]textSpan
+	layout             *semantic.Layout
+	alignment          []semantic.LineAlignment
+	oldSource          []byte
+	newSource          []byte
+}
+
+func (m Model) desiredSemanticProvider() semanticProvider {
+	if m.difftasticMode {
+		return difftasticSemantic
+	}
+	return builtinSemantic
 }
 
 func (m *Model) ensureSemanticAnalysis() tea.Cmd {
@@ -45,7 +64,8 @@ func (m *Model) ensureSemanticAnalysis() tea.Cmd {
 		m.cancelSemanticAnalysis()
 		return nil
 	}
-	if m.semantic.repo == m.repo && m.semantic.file == m.file && (m.semantic.loading || m.semantic.ready) {
+	provider := m.desiredSemanticProvider()
+	if m.semantic.repo == m.repo && m.semantic.file == m.file && m.semantic.provider == provider && (m.semantic.loading || m.semantic.ready) {
 		return nil
 	}
 	if m.semantic.cancel != nil {
@@ -56,32 +76,40 @@ func (m *Model) ensureSemanticAnalysis() tea.Cmd {
 	m.semantic.id++
 	m.semantic.repo = m.repo
 	m.semantic.file = m.file
+	m.semantic.provider = provider
 	m.semantic.loading = true
 	m.semantic.ready = false
 	m.semantic.engine = ""
 	m.semantic.warning = ""
 	m.semantic.spans = nil
 	m.semantic.layout = nil
+	m.semantic.alignment = nil
 	m.semantic.oldSource = nil
 	m.semantic.newSource = nil
 	id, repo, file := m.semantic.id, m.repo, m.file
 	operations, analyzer := m.repositories, m.semantic.analyzer
+	if provider == difftasticSemantic {
+		analyzer = m.semantic.difftasticAnalyzer
+	}
 	return func() tea.Msg {
 		oldSource, newSource, err := operations.ReadPair(ctx, repo, repo.Files[file])
 		if err != nil {
-			return semanticResultMsg{id: id, repo: repo, file: file, err: err}
+			return semanticResultMsg{id: id, repo: repo, file: file, provider: provider, err: err}
+		}
+		if analyzer == nil {
+			return semanticResultMsg{id: id, repo: repo, file: file, provider: provider, err: errors.New("semantic analyzer is unavailable")}
 		}
 		plan, err := analyzer.Analyze(ctx, semantic.Input{Path: repo.Files[file].Path, Old: oldSource, New: newSource})
 		return semanticResultMsg{
-			id: id, repo: repo, file: file, oldSource: oldSource, newSource: newSource, plan: plan, err: err,
+			id: id, repo: repo, file: file, provider: provider, oldSource: oldSource, newSource: newSource, plan: plan, err: err,
 		}
 	}
 }
 
-func (m *Model) applySemanticResult(msg semanticResultMsg) {
+func (m *Model) applySemanticResult(msg semanticResultMsg) bool {
 	if !m.semanticReflow || msg.id != m.semantic.id || msg.repo != m.repo || msg.file != m.file ||
-		msg.repo != m.semantic.repo || msg.file != m.semantic.file {
-		return
+		msg.repo != m.semantic.repo || msg.file != m.semantic.file || msg.provider != m.desiredSemanticProvider() || msg.provider != m.semantic.provider {
+		return false
 	}
 	position := m.captureSplitLayoutPosition()
 	m.semantic.cancel = nil
@@ -89,19 +117,40 @@ func (m *Model) applySemanticResult(msg semanticResultMsg) {
 	if msg.err != nil {
 		m.semantic.ready = false
 		m.semantic.warning = msg.err.Error()
-		m.status = "Semantic analysis unavailable: " + msg.err.Error()
-		return
+		if msg.provider == difftasticSemantic {
+			m.status = "Difftastic unavailable: " + msg.err.Error() + ". Showing raw split diff."
+		} else {
+			m.status = "Semantic analysis unavailable: " + msg.err.Error()
+		}
+		return false
 	}
 	m.semantic.ready = true
 	m.semantic.engine = msg.plan.Engine
 	m.semantic.warning = msg.plan.Warning
 	rawSpans := projectSemanticPlan(m.repo.Files[m.file].Lines, msg.plan, msg.oldSource, msg.newSource)
-	m.semantic.spans = refineSemanticSpans(m.repo.Files[m.file].Lines, filterSemanticSpans(m.repo.Files[m.file].Lines, rawSpans))
+	if msg.provider == difftasticSemantic {
+		m.semantic.spans = rawSpans
+	} else {
+		m.semantic.spans = refineSemanticSpans(m.repo.Files[m.file].Lines, filterSemanticSpans(m.repo.Files[m.file].Lines, rawSpans))
+	}
 	m.semantic.layout = msg.plan.Layout
+	m.semantic.alignment = msg.plan.Alignment
 	m.semantic.oldSource = msg.oldSource
 	m.semantic.newSource = msg.newSource
+	if msg.provider == difftasticSemantic && len(m.semantic.alignment) > 0 {
+		if _, complete := buildDifftasticSplitRows(m.currentLines(), m.semantic.alignment, msg.oldSource, msg.newSource, m.semantic.spans); !complete {
+			m.semantic.alignment = nil
+			m.semantic.warning = "Difftastic alignment did not account for every visible Git row"
+		}
+	}
 	m.restoreSplitLayoutPosition(position)
-	if msg.plan.Warning != "" {
+	if msg.provider == difftasticSemantic && m.semantic.warning != "" {
+		m.status = m.semantic.warning + "; showing the raw split diff."
+	} else if msg.provider == difftasticSemantic && len(m.semantic.alignment) > 0 {
+		m.status = "Difftastic alignment ready."
+	} else if msg.provider == difftasticSemantic {
+		m.status = "Difftastic returned no line alignment; showing the raw split diff."
+	} else if msg.plan.Warning != "" {
 		m.status = msg.plan.Warning
 	} else if m.normalizedLayout && msg.plan.Layout != nil {
 		m.status = "Normalized split ready."
@@ -112,6 +161,8 @@ func (m *Model) applySemanticResult(msg semanticResultMsg) {
 	} else {
 		m.status = "Token highlighting ready; this language has no AST adapter."
 	}
+	return (msg.provider == difftasticSemantic && len(m.semantic.alignment) > 0) ||
+		(m.normalizedLayout && msg.plan.Layout != nil)
 }
 
 // Tree-sitter intentionally treats string literals as atomic syntax. When a
@@ -241,6 +292,7 @@ func (m *Model) cancelSemanticAnalysis() {
 	m.semantic.engine = ""
 	m.semantic.warning = ""
 	m.semantic.layout = nil
+	m.semantic.alignment = nil
 	m.semantic.oldSource = nil
 	m.semantic.newSource = nil
 }
@@ -250,19 +302,37 @@ func (m Model) semanticLabel() string {
 		return ""
 	}
 	if m.repo == nil || m.file < 0 || m.file >= len(m.repo.Files) || m.repo.Files[m.file].Binary {
+		if m.difftasticMode {
+			return "DIFFT N/A"
+		}
 		return "SEM N/A"
 	}
-	if m.semantic.repo != m.repo || m.semantic.file != m.file {
+	if m.semantic.repo != m.repo || m.semantic.file != m.file || m.semantic.provider != m.desiredSemanticProvider() {
+		if m.difftasticMode {
+			return "DIFFT…"
+		}
 		return "SEM…"
 	}
 	if m.semantic.loading {
+		if m.difftasticMode {
+			return "DIFFT…"
+		}
 		return "SEM…"
 	}
 	if m.semantic.ready {
+		if m.difftasticMode && len(m.semantic.alignment) == 0 {
+			return "DIFFT!"
+		}
 		return string(m.semantic.engine)
 	}
 	if m.semantic.warning != "" {
+		if m.difftasticMode {
+			return "DIFFT!"
+		}
 		return "SEM!"
+	}
+	if m.difftasticMode {
+		return "DIFFT*"
 	}
 	return "TOKEN*"
 }
