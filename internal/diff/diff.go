@@ -26,6 +26,9 @@ type Line struct {
 	// OriginalIndex is assigned by the UI display cache after filtering. It is
 	// intentionally excluded from persisted snapshots and parser output.
 	OriginalIndex int `json:"-"`
+	// Collapsed is set only on synthetic UI rows that represent omitted,
+	// unchanged source between adjacent Git hunks.
+	Collapsed int `json:"-"`
 }
 
 type Hunk struct {

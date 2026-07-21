@@ -55,6 +55,9 @@ func (m Model) clipboardText() (string, int) {
 	}
 	if baseLines.start > 0 {
 		base := m.repo.Base
+		if m.reviewComparisonActive() {
+			base = "last review"
+		}
 		if base == "" {
 			base = "base"
 		}

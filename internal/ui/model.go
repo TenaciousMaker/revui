@@ -93,6 +93,8 @@ type Model struct {
 	diffDisplay         *diffDisplayCache
 	normalizedSplit     *normalizedSplitCache
 	semantic            semanticAnalysisState
+	reviewWork          reviewInteractionState
+	hunkExpansion       *hunkExpansionState
 }
 
 func New(repo *gitrepo.Repository) (Model, error) {
@@ -127,6 +129,8 @@ func newModel(repo *gitrepo.Repository, preferences preferenceStore, reviews rev
 		semantic: semanticAnalysisState{
 			analyzer: semantic.New(8), difftasticAnalyzer: semantic.NewDifftastic(8), file: -1,
 		},
+		reviewWork:      newReviewInteractionState(),
+		hunkExpansion:   newHunkExpansionState(),
 		preferencesPath: preferencesPath,
 	}
 	m.applyPreferences(loadedPreferences)
@@ -186,7 +190,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMotionMsg:
 		return m.handleMouseMotion(msg), nil
 	case tea.MouseReleaseMsg:
-		return m.handleMouseRelease(msg), nil
+		m = m.handleMouseRelease(msg)
+		if msg.Button == tea.MouseLeft && !m.mouseSelectMoved && m.focus == focusDiff && m.sourcePath == "" {
+			if _, ok := m.selectedHunkGap(); ok {
+				return m, m.expandSelectedHunkGap()
+			}
+		}
+		return m, nil
 	case repositoryWatchMsg:
 		if msg.closed {
 			m.watcher = nil
@@ -254,6 +264,15 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = clipboardStatus(msg.lineCount)
 		}
+		return m, nil
+	case reviewCaptureMsg:
+		m.applyReviewCapture(msg)
+		return m, nil
+	case reviewComparisonMsg:
+		m.applyReviewComparison(msg)
+		return m, m.ensureSemanticAnalysis()
+	case hunkExpansionMsg:
+		m.applyHunkExpansion(msg)
 		return m, nil
 	case tea.PasteMsg:
 		return m.handlePaste(msg.Content)
@@ -325,6 +344,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusFiles
 		}
 	case "right", "l", "enter":
+		if key == "enter" && m.focus == focusDiff {
+			if _, ok := m.selectedHunkGap(); ok {
+				return m, m.expandSelectedHunkGap()
+			}
+		}
 		if m.focus == focusFiles && len(m.repo.Files) > 0 {
 			if m.fileLayout == treeFiles {
 				handled := false
@@ -393,7 +417,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "A", "shift+a":
 		m.cycleFileScope()
 	case " ", "space":
-		m.toggleReviewedFile()
+		return m, m.toggleReviewedFile()
+	case "r":
+		return m, m.toggleAllReviewed()
+	case "u":
+		return m, m.toggleReviewComparison()
+	case "x":
+		if m.focus == focusDiff {
+			return m, m.expandSelectedHunkGap()
+		}
 	case "w":
 		m.toggleFilePaneWidth()
 	case "v":
@@ -582,14 +614,23 @@ func (m *Model) ensureFileVisible() {
 func (m Model) pageSize() int { return max(4, m.height-8) }
 
 func (m Model) currentLines() []diff.Line {
-	if m.file < 0 || m.file >= len(m.repo.Files) {
+	var lines []diff.Line
+	if m.reviewComparisonActive() {
+		lines = buildVisibleDiffLines(m.reviewWork.comparison.Lines, false)
+	} else if m.file < 0 || m.file >= len(m.repo.Files) {
 		return nil
+	} else {
+		ignoreWhitespace := m.ignoreWhitespace && !m.semanticReflow
+		if m.diffDisplay == nil {
+			lines = buildVisibleDiffLines(m.repo.Files[m.file].Lines, ignoreWhitespace)
+		} else {
+			lines = m.diffDisplay.linesFor(m.repo, m.file, ignoreWhitespace)
+		}
 	}
-	ignoreWhitespace := m.ignoreWhitespace && !m.semanticReflow
-	if m.diffDisplay == nil {
-		return buildVisibleDiffLines(m.repo.Files[m.file].Lines, ignoreWhitespace)
+	if m.hunkExpansion == nil {
+		return lines
 	}
-	return m.diffDisplay.linesFor(m.repo, m.file, ignoreWhitespace)
+	return m.hunkExpansion.linesFor(m.hunkDisplayKey(), lines)
 }
 
 func (m Model) currentIntralineSpans() map[int][]textSpan {
@@ -597,8 +638,14 @@ func (m Model) currentIntralineSpans() map[int][]textSpan {
 		return nil
 	}
 	lines := m.currentLines()
+	if m.reviewComparisonActive() {
+		return m.hunkExpansion.intralineFor(m.hunkDisplayKey(), lines, false)
+	}
 	if spans := m.semanticSpansForVisibleLines(lines); spans != nil {
 		return spans
+	}
+	if m.hunkExpansion != nil && m.hunkExpansion.hasGapPresentation(m.hunkDisplayKey()) {
+		return m.hunkExpansion.intralineFor(m.hunkDisplayKey(), lines, m.semanticReflow)
 	}
 	if m.diffDisplay == nil {
 		return buildIntralineSpanSet(lines, m.semanticReflow)
@@ -608,6 +655,9 @@ func (m Model) currentIntralineSpans() map[int][]textSpan {
 
 func (m Model) currentSplitRows() []splitRow {
 	lines := m.currentLines()
+	if m.reviewComparisonActive() {
+		return splitRows(lines)
+	}
 	if m.normalizedSplit == nil {
 		return splitRows(lines)
 	}
@@ -686,34 +736,6 @@ func (m *Model) cycleFileScope() {
 	}
 	m.ensureVisible()
 	m.persistPreferences()
-}
-
-func (m *Model) toggleReviewedFile() {
-	fileIndex := -1
-	if m.fileLayout == treeFiles && m.focus == focusFiles {
-		nodes := m.currentTreeNodes()
-		if m.treeCursor >= 0 && m.treeCursor < len(nodes) && !nodes[m.treeCursor].directory {
-			fileIndex = nodes[m.treeCursor].fileIndex
-		}
-	} else if m.sourcePath != "" {
-		if index, ok := m.changedFileIndex(m.sourcePath); ok {
-			fileIndex = index
-		}
-	} else if m.file >= 0 && m.file < len(m.repo.Files) {
-		fileIndex = m.file
-	}
-	if fileIndex < 0 || fileIndex >= len(m.repo.Files) {
-		m.status = "Only changed files can be marked reviewed."
-		return
-	}
-	file := m.repo.Files[fileIndex]
-	reviewed := m.session.ToggleReviewed(file.Path, fileReviewFingerprint(file))
-	m.persist()
-	if reviewed {
-		m.status = "Marked " + file.Path + " as reviewed."
-	} else {
-		m.status = "Marked " + file.Path + " as unreviewed."
-	}
 }
 
 func (m *Model) toggleFilePaneWidth() {
@@ -929,7 +951,7 @@ func (m *Model) jumpHunk(direction int) {
 	lines := m.currentLines()
 	if direction > 0 {
 		for index, line := range lines {
-			if line.Kind == diff.Meta && index > m.line {
+			if line.Kind == diff.Meta && line.Collapsed == 0 && index > m.line {
 				m.line = index
 				m.syncSplitCursorToLine()
 				m.ensureVisible()
@@ -938,7 +960,7 @@ func (m *Model) jumpHunk(direction int) {
 		}
 	} else {
 		for index := len(lines) - 1; index >= 0; index-- {
-			if lines[index].Kind == diff.Meta && index < m.line {
+			if lines[index].Kind == diff.Meta && lines[index].Collapsed == 0 && index < m.line {
 				m.line = index
 				m.syncSplitCursorToLine()
 				m.ensureVisible()
@@ -1024,6 +1046,8 @@ func (m Model) watchCmd() tea.Cmd {
 
 func (m *Model) stopWatcher() {
 	m.cancelSemanticAnalysis()
+	m.cancelReviewWork()
+	m.cancelHunkExpansion()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 		m.refreshCancel = nil
@@ -1056,6 +1080,9 @@ func batchCommands(commands ...tea.Cmd) tea.Cmd {
 }
 
 func (m *Model) applyRefresh(repo *gitrepo.Repository, automatic bool) {
+	m.clearReviewComparison()
+	m.cancelHunkExpansion()
+	m.hunkExpansion = newHunkExpansionState()
 	oldPath := m.currentPath()
 	oldLine := m.line
 	oldSourceLine := m.sourceLine
@@ -1104,6 +1131,7 @@ func pathInRepository(path string, paths []string) bool {
 }
 
 func (m *Model) refreshCmd(automatic bool) tea.Cmd {
+	m.cancelHunkExpansion()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 	}

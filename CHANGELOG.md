@@ -2,6 +2,14 @@
 
 All notable changes to revui are documented here. The project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Mark or clear every changed file's reviewed state with one shortcut.
+- Preserve text baselines for reviewed files, flag files changed afterward, and show a focused diff against the last reviewed version.
+- Expand omitted unchanged lines between individual diff hunks with the keyboard or mouse.
+
 ## [0.1.0] - 2026-07-17
 
 ### Added

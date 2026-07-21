@@ -6,13 +6,13 @@
 
 **Review your PR before it's a PR.**
 
-revui is a fast, local review workspace for Git branches. It keeps the changed-file tree on the left and a GitHub-like, syntax-highlighted diff on the right, then lets you inspect complete files, search the repository, track reviewed files, and copy precise code context into any editor or LLM.
+revui is a local terminal interface for reviewing a Git branch. It provides a changed-file browser, unified and split diffs, full-file source, repository search, reviewed-file tracking, and location-aware clipboard output.
 
 <p align="center">
   <img src="docs/assets/preview.svg" alt="revui showing a changed-file tree and unified diff" width="100%">
 </p>
 
-revui never connects to GitHub or sends code anywhere. It does not edit files, commit, push, or invoke an agent.
+revui makes no network requests and does not modify working-tree files, commits, branches, or remotes.
 
 ## Install
 
@@ -24,7 +24,7 @@ With Go 1.25 or newer:
 go install github.com/TenaciousMaker/revui/cmd/revui@latest
 ```
 
-Build from source:
+From source:
 
 ```sh
 git clone https://github.com/TenaciousMaker/revui.git
@@ -33,7 +33,7 @@ make build
 ./revui --version
 ```
 
-## Five-minute workflow
+## Quick start
 
 Run revui anywhere inside a Git repository:
 
@@ -41,124 +41,134 @@ Run revui anywhere inside a Git repository:
 revui
 ```
 
-revui detects the repository's default branch and reviews everything since its merge base, including committed, staged, unstaged, renamed, deleted, binary, and untracked changes. Override the comparison when needed:
+revui compares the current branch with the merge base of the detected default branch. The review includes committed, staged, unstaged, renamed, deleted, binary, and untracked changes.
+
+Specify a base revision when automatic detection is not appropriate:
 
 ```sh
 revui --base origin/develop
 ```
 
-1. Move through changed files with `j`/`k` or the mouse.
-2. Press `t` for the directory tree and `A` for changed, context, or all files.
-3. Press `o` to switch between the diff and complete source.
-4. Press `f` to search text across the repository.
-5. Press `space` when a changed file is reviewed.
-6. Press `y` to copy the current line or a selected range with its file and source location.
+Typical workflow:
 
-The watcher refreshes the review after save bursts without moving your current file or line. CGO-enabled macOS builds use one recursive FSEvents stream; Linux uses inotify through fsnotify.
+1. Move through files and diff rows with `j`/`k`, arrow keys, or the mouse.
+2. Press `t` for a directory tree. Press `A` to cycle changed, context, and all-files scopes.
+3. Press `s` for split view or `o` for the complete file.
+4. Select a `⋯` row and press `x` or Enter to expand unchanged lines between hunks. The row is also clickable.
+5. Press `f` to search text across the repository.
+6. Press `space` to mark the selected file reviewed, or `r` to mark every changed file reviewed.
+7. A reviewed file changed afterward is marked `↻`. Press `u` to view only changes made since the last review.
+8. Press `y` to copy the current line or selected range with its file and source location.
 
-## What makes it useful
+## Capabilities
 
-- **One coherent branch view.** Merge-base comparison plus committed and working-tree changes.
-- **Review in context.** Toggle changed files, their sibling context, or the entire non-ignored repository tree.
-- **Diff or source.** Switch between unified/split diffs and the complete working or base file.
-- **Signal controls.** Emphasize credible changed words inside replacement lines, normalize common structures across popular languages, or hide whitespace-only edits in the raw diff.
-- **Repository search.** See grouped context around literal matches and jump directly to a source line.
-- **Durable progress.** Reviewed files stay reviewed until their diff fingerprint changes.
-- **Location-rich copy.** Keyboard ranges and pane-constrained mouse selections copy clean code with branch/base line locations.
-- **Fast navigation.** Cached rendering, compact directory chains, and accelerated, frame-coalesced scrolling remain responsive in large repositories.
-- **Local by design.** No account, token, network request, or working-tree mutation.
+- Merge-base branch review including working-tree and untracked changes
+- Flat, tree, changed-only, contextual, and all-files navigation
+- Unified and split diffs with syntax and intraline highlighting
+- Expandable unchanged context between individual hunks
+- Complete working-file source and base source for deleted files
+- Fuzzy changed-file jump and repository-wide literal text search
+- Reviewed-file progress with changes-since-review comparison
+- Keyboard and pane-constrained mouse selection
+- Accelerated mouse-wheel scrolling
+- OSC52 clipboard output with repository-relative path and source lines
+- Automatic repository refresh with manual `R` fallback
+- `NO_COLOR` support with non-color status markers
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Move through files or code lines |
+| `j` / `k`, arrows | Move through files or code rows |
 | Mouse click / wheel | Position the active row or scroll the pane under the pointer |
-| Mouse drag | Select visible code inside the current pane |
+| Mouse drag | Select visible code inside one pane |
 | `tab`, `h` / `l` | Switch panes or navigate tree folders |
 | `t` | Toggle flat and tree file layouts |
 | `A` | Cycle changed, context, and all-files scopes |
-| `space` | Toggle reviewed state for the selected changed file |
 | `w` | Fit or restore the file-pane width |
-| `enter` | Open a file, result, or folder |
+| `enter` | Open a file or folder; expand a selected `⋯` diff row |
 | `/` | Fuzzy-jump to a changed file |
 | `f` | Search text across the repository |
 | `o` | Toggle complete source and diff |
+| `s` | Toggle unified and split diff |
+| `x` | Expand the selected `⋯` region between hunks |
+| `[` / `]` | Jump to the previous or next hunk |
 | `i` | Toggle whitespace-only changes in the raw diff |
-| `e` | Toggle experimental semantic highlighting |
-| `n` | Toggle normalized AST layout in split view |
+| `e` | Toggle semantic highlighting |
+| `n` | Toggle normalized structural layout in split view |
 | `d` | Toggle optional Difftastic structural split |
+| `space` | Toggle reviewed state for the selected changed file |
+| `r` | Mark all changed files reviewed; clear all when every file is current |
+| `u` | Toggle changes since the selected file's last review |
 | `v`, then move | Define a code range |
 | `y` | Copy the current line or selected range with location |
-| `[` / `]` | Jump to the previous or next hunk |
-| `s` | Toggle unified and split diff |
 | `R` | Refresh from Git |
 | `?` | Show the complete keymap |
 | `q` | Quit |
 
-Search inputs support arrows, Home/End, `ctrl+a/e`, `ctrl+b/f`, `ctrl+u/k`, `ctrl+w`, Backspace/Delete, and bracketed paste. Up/down continue to navigate results.
+Search fields support arrow keys, Home/End, `ctrl+a/e`, `ctrl+b/f`, `ctrl+u/k`, `ctrl+w`, Backspace/Delete, and bracketed paste.
 
-### Copying code
+## Diff modes
 
-`y` writes through the terminal's OSC52 clipboard protocol, which works in modern terminals locally and across SSH. The copied block contains the repository-relative file, branch or base line range, and plain source text—never rendered line numbers or diff markers.
+- Raw diff is the default and follows Git's hunk layout.
+- `i` hides whitespace-only changes in raw mode.
+- `e` enables semantic highlighting. The header displays `AST` when a syntax parser is active and `TOKEN*` when token fallback is active.
+- `n` enables normalized structural layout and split view. The header displays `NORMALIZED` when available and `NORM N/A` when the file cannot be normalized.
+- `d` uses [`difft`](https://difftastic.wilfred.me.uk/) when the executable is available on `PATH`. Failure returns to the raw Git split with a visible warning.
 
-If clipboard integration is disabled by your terminal or multiplexer, use its normal text-selection copy command. See [Troubleshooting](#troubleshooting).
+Built-in syntax parsers cover TypeScript/TSX, JavaScript/JSX, Go, Python, Rust, Java, JSON, C, C++, and Ruby. Other file types use token highlighting.
 
-## Files, state, and privacy
+## State and privacy
 
-Global display preferences use the operating system's user configuration directory:
+Global display preferences are stored in the operating system's user configuration directory:
 
 - macOS: `~/Library/Application Support/revui/preferences.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/revui/preferences.json`
 
-Flat/tree layout, file scope, pane width, unified/split mode, the raw whitespace filter, semantic highlighting, normalized layout, and Difftastic mode follow you across repositories. Cursor positions and expanded folders are temporary.
+The file layout, file scope, pane width, unified/split mode, whitespace filter, semantic mode, normalized layout, and Difftastic mode apply across repositories.
 
-Experimental semantic highlighting (`e`) compares complete old and new source instead of pairing Git lines. The diff header reports the active engine: `AST` uses Tree-sitter, `TOKEN*` is the language-neutral fallback, and `SEM…` means analysis is still running. Built-in AST grammars cover TypeScript/TSX, JavaScript/JSX, Go, Python, Rust, Java, JSON, C, C++, and Ruby. Semantic modes inherently ignore formatting whitespace, so the raw `i` filter is inactive while they are enabled. The AST engine matches a compact syntax tree while retaining original source positions, so formatter-driven wrapping, indentation, and grammar-supported trailing commas stay visually quiet without replacing the source you are reviewing. Word emphasis is reserved for credible sparse replacements; pure insertions, deletions, mostly rewritten lines, and reordered syntax remain visibly added or removed. Unsupported languages such as Apex, temporarily invalid syntax, excessive input, or a non-CGO build fall back visibly and safely to tokens.
+Reviewed-file fingerprints and local text baselines are stored under the repository's Git metadata at `.git/revui`. A `✓` indicates that the current diff matches the reviewed version. A `↻` indicates that the file changed afterward. Legacy review entries and binary files can be marked reviewed but do not provide a text comparison until a textual baseline is available.
 
-Tree-sitter support and the descriptor-safe macOS FSEvents watcher are compiled into normal CGO-enabled source builds and `go install` builds. Static non-CGO archives use the portable token fallback and require `R` for manual refresh on macOS. Semantic analysis runs locally, is cancellable, and is cached only in memory for the current process.
+Repository search uses `git grep` and respects Git ignore rules. revui does not transmit repository content.
 
-Normalized layout (`n`, shown as `NORMALIZED`) is an additional multi-language experiment. It inserts visual line breaks inside confidently related imports, declarations, bindings, arguments, objects, collections, and language equivalents, then renders the semantic engine's completed row alignment. Each grammar has a small declarative normalization profile; constructs without a confident structural owner remain in the literal Git layout instead of being guessed. Contiguous same-role one-to-many rewrites can be shown as a stacked composite; reordered, duplicate, mixed-role, and otherwise ambiguous owners also stay literal. Tokens are never rewritten: line navigation and `y` always address and copy the original source. Press `n` again for the raw Git layout. Unsupported languages continue to show the raw split diff as `NORM N/A`.
+## Clipboard
 
-Difftastic mode (`d`, shown as `DIFFT`) is an optional experiment for users who have [`difft`](https://difftastic.wilfred.me.uk/) on `PATH`. It asks Difftastic for structural line correspondence and changed byte ranges, then projects that result onto revui's existing Git hunks. Git remains authoritative: files, hunk navigation, line locations, copying, and live refresh all continue to use the raw repository snapshot. If Difftastic is absent, fails, returns an unfamiliar JSON schema, or does not account for every visible Git row, revui displays a warning and preserves the literal raw split.
+`y` uses the terminal's OSC52 clipboard protocol. Copied text contains the repository-relative file path, branch or base line range, and plain source without rendered line numbers or diff markers.
 
-The adapter has been tested with Difftastic 0.69.0. Its JSON output is currently marked unstable upstream, so compatibility is intentionally guarded rather than assumed. Analysis is local and cancellable. revui writes the two source versions to a private temporary directory with user-only permissions, invokes `difft --display json`, and removes the directory immediately afterward. It never configures Git's external diff mechanism. Press `d` again to return to the raw split.
+If OSC52 is disabled by the terminal or multiplexer, use terminal-native text selection and copy.
 
-Reviewed-file fingerprints live under the repository's Git metadata at `.git/revui`. revui adds nothing to the working tree and makes no network requests. Repository search uses `git grep` and respects Git ignore rules.
+## Requirements
 
-Set [`NO_COLOR`](https://no-color.org/) to disable semantic colors. Added/deleted markers and focus labels remain visible without color.
+- macOS or Linux on amd64 or arm64
+- Git
+- An interactive ANSI terminal
+- Go 1.25 or newer only when installing with `go install` or building from source
 
-## Supported environments
-
-The v0.1 beta supports macOS and Linux on amd64 and arm64. revui needs Git and an interactive terminal with ANSI support. Mouse input and OSC52 clipboard behavior depend on the terminal; the full keyboard workflow remains available without either.
+Mouse input and OSC52 support depend on the terminal. Every primary workflow has a keyboard equivalent.
 
 ## Troubleshooting
 
-**The wrong base was selected.** Run `revui --base <revision>`. By default revui tries `origin/HEAD`, `main`, and `master`, then falls back to `HEAD^`.
+**Wrong comparison base:** run `revui --base <revision>`.
 
-**Clipboard status says copied, but nothing appears.** Enable OSC52 in the terminal or multiplexer, or use terminal-native selection copy.
+**Clipboard reports success but remains empty:** enable OSC52 in the terminal or multiplexer, or use terminal-native copy.
 
-**Changes are not refreshing.** Press `R`. Some networked or virtual filesystems do not emit reliable filesystem events. On macOS, realtime refresh requires a CGO-enabled build such as a normal `go install`; non-CGO builds deliberately avoid the kqueue behavior that opens a descriptor for every watched entry.
+**Changes do not refresh:** press `R`. Some networked and virtual filesystems do not emit reliable filesystem events.
 
-**Colors are difficult to distinguish.** Set `NO_COLOR=1`; `+`, `-`, hunk headers, selected rows, and pane labels provide non-color cues.
+**Colors are difficult to distinguish:** run with `NO_COLOR=1`. Added/deleted markers, hunk headers, selected rows, and pane labels remain visible.
 
-**The terminal is narrow.** revui switches to a single visible pane. Use `tab`, `h`, or `l` to move between files and code.
+**Terminal is narrow:** use `tab`, `h`, or `l` to switch between the file and code panes.
 
-Please use the [bug report form](https://github.com/TenaciousMaker/revui/issues/new?template=bug.yml) for reproducible problems.
+Report reproducible problems with the [bug report form](https://github.com/TenaciousMaker/revui/issues/new?template=bug.yml).
 
-## Development
+## Contributing
 
 ```sh
-make check          # formatting, vet, and tests
-make test-race      # race detector
-make coverage       # enforce the project coverage floor
-make release-snapshot
+make check
+make test-race
+make coverage
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [the architecture guide](docs/architecture.md). The demo is reproducible with [VHS](https://github.com/charmbracelet/vhs): `make demo`.
-
-## Scope
-
-revui is intentionally a pre-PR tool. It does not authenticate with GitHub, import or submit reviews, invoke an LLM, manage comments, create commits, push branches, or manage terminal sessions. Copy context out; bring conclusions back to your normal development workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [the architecture guide](docs/architecture.md).
 
 ## License
 

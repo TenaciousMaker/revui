@@ -47,17 +47,19 @@ Virtual rows copy source tokens verbatim and replace only whitespace between str
 
 The UI schedules semantic work as a Bubble Tea command. Selecting another file, refreshing the repository, disabling the feature, or exiting cancels obsolete work; results carry snapshot, file, and request identities so late messages cannot mutate the current view. Only the final range-to-line projection lives in `internal/ui`. Rendering and scrolling never parse source.
 
-`internal/config` owns versioned user-wide display preferences. `internal/review` separately owns repository/branch reviewed-file fingerprints under Git metadata. Both write atomically with user-only permissions.
+`internal/config` owns versioned user-wide display preferences. `internal/review` separately owns repository/branch reviewed-file fingerprints and source baselines under Git metadata. Baselines are captured asynchronously through a narrow repository adapter; stale fingerprints remain visible rather than silently becoming unreviewed. A changes-since-review view asks the Git adapter for a normal no-index diff between the immutable saved baseline and current working-tree source, so the existing diff parser, navigation, split layout, copying, and renderer remain authoritative. Superseded capture/comparison work is cancelled and late results carry repository and request identities. Both stores write atomically with user-only permissions.
 
 `internal/watcher` converts noisy filesystem activity into debounced refresh events behind a small platform backend. Linux and other supported Unix builds use fsnotify; CGO-enabled macOS builds use one recursive FSEvents stream because fsnotify's kqueue emulation opens descriptors for every entry in a watched directory. Non-CGO macOS builds fail closed to manual refresh rather than risk exhausting the system file table. The UI owns the watcher lifecycle and cancels in-flight repository operations on replacement or exit.
 
 `internal/ui` coordinates Bubble Tea messages while pane-specific state remains grouped by responsibility. Repository snapshots are replaced as a whole; navigation never observes a partially refreshed diff.
 
+Collapsed hunk gaps are a presentation overlay, not part of the repository snapshot. The UI derives and caches gap rows from adjacent Git hunk line numbers. Expanding a gap lazily reads the complete old/new source through the existing repository seam, validates both source ranges, and inserts neutral context rows with real line numbers. Source reads are cancellable; scrolling and cursor movement reuse the cached overlay and never execute Git or rebuild the document.
+
 ## Invariants
 
 - revui never modifies working-tree content or Git history.
 - Git comparisons start at the merge base, then include index, working-tree, and untracked changes.
-- Reviewed state is valid only while a file's diff fingerprint matches.
+- Reviewed state is current only while a file's diff fingerprint matches; a mismatch retains the last-reviewed baseline and is displayed explicitly.
 - Every mouse workflow has a keyboard equivalent.
 - Scrolling performs no Git, filesystem, syntax-highlighting, or tree-rebuild work.
 - Search and refresh results are ignored when superseded.

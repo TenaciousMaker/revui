@@ -669,8 +669,12 @@ func TestAllFilesTreeCompactsUnchangedDirectoryChains(t *testing.T) {
 
 func TestReviewedFilePersistsAndResetsWhenDiffChanges(t *testing.T) {
 	reviewPath := filepath.Join(t.TempDir(), "review.json")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "service.go"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	repo := &gitrepo.Repository{
-		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: reviewPath,
+		Root: root, Branch: "feature", Base: "main", ReviewPath: reviewPath,
 		Files: []diff.File{{Path: "service.go", Status: "M", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "first", NewNumber: 1}}}},
 	}
 	m, err := newTestModel(t, repo)
@@ -678,7 +682,12 @@ func TestReviewedFilePersistsAndResetsWhenDiffChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.width, m.height = 120, 24
-	updated, _ := m.Update(tea.KeyPressMsg{Text: " ", Code: tea.KeySpace})
+	updated, command := m.Update(tea.KeyPressMsg{Text: " ", Code: tea.KeySpace})
+	m = updated.(Model)
+	if command == nil {
+		t.Fatal("mark reviewed did not schedule baseline capture")
+	}
+	updated, _ = m.Update(command())
 	m = updated.(Model)
 	if !m.fileReviewed(0) || !strings.Contains(xansi.Strip(m.renderFiles(42, 20)), "1/1 REVIEWED") {
 		t.Fatalf("file was not rendered reviewed:\n%s", xansi.Strip(m.renderFiles(42, 20)))
@@ -689,8 +698,111 @@ func TestReviewedFilePersistsAndResetsWhenDiffChanges(t *testing.T) {
 	}
 
 	m.repo.Files[0].Lines[0].Text = "second"
-	if m.fileReviewed(0) || !strings.Contains(xansi.Strip(m.renderFiles(42, 20)), "0/1 REVIEWED") {
+	if m.fileReviewed(0) || !strings.Contains(xansi.Strip(m.renderFiles(42, 20)), "1 UPDATED") {
 		t.Fatalf("changed diff remained reviewed:\n%s", xansi.Strip(m.renderFiles(42, 20)))
+	}
+}
+
+func TestMarkAllReviewedTogglesEveryChangedFileWithOnePersistedBaseline(t *testing.T) {
+	root := t.TempDir()
+	for path, content := range map[string]string{"one.go": "package one\n", "two.go": "package two\n"} {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviewPath := filepath.Join(t.TempDir(), "review.json")
+	repo := &gitrepo.Repository{
+		Root: root, Branch: "feature", Base: "main", ReviewPath: reviewPath,
+		Files: []diff.File{
+			{Path: "one.go", Status: "M", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "package one", NewNumber: 1}}},
+			{Path: "two.go", Status: "A", Additions: 1, Lines: []diff.Line{{Kind: diff.Addition, Text: "package two", NewNumber: 1}}},
+		},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, command := m.Update(tea.KeyPressMsg{Text: "r", Code: 'r'})
+	m = updated.(Model)
+	if command == nil {
+		t.Fatal("mark-all did not schedule baseline capture")
+	}
+	updated, _ = m.Update(command())
+	m = updated.(Model)
+	if !m.fileReviewed(0) || !m.fileReviewed(1) || !strings.Contains(xansi.Strip(m.renderFiles(42, 20)), "2/2 REVIEWED") {
+		t.Fatalf("mark-all did not review every file:\n%s", xansi.Strip(m.renderFiles(42, 20)))
+	}
+	loaded, err := review.Load(reviewPath, "feature", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, ok := loaded.Baseline("one.go", "changed-again")
+	if !ok || string(baseline.Source) != "package one\n" {
+		t.Fatalf("persisted baseline=%#v ok=%v", baseline, ok)
+	}
+
+	updated, command = m.Update(tea.KeyPressMsg{Text: "r", Code: 'r'})
+	m = updated.(Model)
+	if command != nil || m.fileReviewed(0) || m.fileReviewed(1) {
+		t.Fatalf("second mark-all did not clear reviewed state: command=%v session=%#v", command, m.session)
+	}
+}
+
+func TestChangedSinceReviewMarkerAndComparisonToggle(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "service.go"), []byte("package service\n\nconst Value = \"latest\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewPath := filepath.Join(t.TempDir(), "review.json")
+	branchDiff := diff.File{
+		Path: "service.go", Status: "M", Additions: 1, Deletions: 1,
+		Lines: []diff.Line{
+			{Kind: diff.Meta, Text: "@@ -3 +3 @@", Hunk: 0},
+			{Kind: diff.Deletion, Text: "const Value = \"base\"", OldNumber: 3, Hunk: 0},
+			{Kind: diff.Addition, Text: "const Value = \"latest\"", NewNumber: 3, Hunk: 0},
+		},
+	}
+	session := review.Session{Branch: "feature", Base: "main"}
+	session.SetReviewed("service.go", fileReviewFingerprint(branchDiff), []byte("package service\n\nconst Value = \"reviewed\"\n"), true)
+	// Change the branch fingerprint after capturing what the reviewer saw.
+	branchDiff.Lines[2].Text = "const Value = \"latest now\""
+	if err := review.Save(reviewPath, session); err != nil {
+		t.Fatal(err)
+	}
+	repo := &gitrepo.Repository{Root: root, Branch: "feature", Base: "main", ReviewPath: reviewPath, Files: []diff.File{branchDiff}}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus = 120, 24, focusDiff
+	files := xansi.Strip(m.renderFiles(42, 20))
+	if !strings.Contains(files, "↻") || !strings.Contains(files, "1 UPDATED") {
+		t.Fatalf("changed-since-review state is not visible:\n%s", files)
+	}
+
+	updated, command := m.Update(tea.KeyPressMsg{Text: "u", Code: 'u'})
+	m = updated.(Model)
+	if command == nil {
+		t.Fatal("changes-since-review did not schedule a comparison")
+	}
+	updated, _ = m.Update(command())
+	m = updated.(Model)
+	if !strings.Contains(xansi.Strip(m.renderDiff(100, 14)), "SINCE REVIEW") {
+		t.Fatalf("review comparison label missing:\n%s", xansi.Strip(m.renderDiff(100, 14)))
+	}
+	var removedReviewed, addedLatest bool
+	for _, line := range m.currentLines() {
+		removedReviewed = removedReviewed || line.Kind == diff.Deletion && strings.Contains(line.Text, "reviewed")
+		addedLatest = addedLatest || line.Kind == diff.Addition && strings.Contains(line.Text, "latest")
+	}
+	if !removedReviewed || !addedLatest {
+		t.Fatalf("review comparison lines=%#v", m.currentLines())
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "u", Code: 'u'})
+	m = updated.(Model)
+	if strings.Contains(xansi.Strip(m.renderDiff(100, 14)), "SINCE REVIEW") || !strings.Contains(m.currentLines()[1].Text, "base") {
+		t.Fatalf("second comparison toggle did not restore branch diff: %#v", m.currentLines())
 	}
 }
 

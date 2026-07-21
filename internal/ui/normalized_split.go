@@ -15,6 +15,7 @@ type normalizedSplitCache struct {
 	file                       int
 	layout                     *semantic.Layout
 	semanticID                 uint64
+	hunkVersion                uint64
 	difftastic                 bool
 	oldSourceLen, newSourceLen int
 	rows                       []splitRow
@@ -158,13 +159,17 @@ func findSplitAnchor(rows []splitRow, anchor splitSourceAnchor) int {
 }
 
 func (c *normalizedSplitCache) rowsFor(m Model, lines []diff.Line) []splitRow {
+	hunkVersion := uint64(0)
+	if m.hunkExpansion != nil {
+		hunkVersion = m.hunkExpansion.versionFor(m.hunkExpansionContext())
+	}
 	if m.difftasticMode {
 		if !m.semantic.ready || m.semantic.provider != difftasticSemantic || len(m.semantic.alignment) == 0 ||
 			m.semantic.repo != m.repo || m.semantic.file != m.file {
 			return splitRows(lines)
 		}
 		if c.repo == m.repo && c.file == m.file && c.semanticID == m.semantic.id && c.difftastic &&
-			c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) {
+			c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) && c.hunkVersion == hunkVersion {
 			return c.rows
 		}
 		rows, ok := buildDifftasticSplitRows(lines, m.semantic.alignment, m.semantic.oldSource, m.semantic.newSource, m.semantic.spans)
@@ -173,6 +178,7 @@ func (c *normalizedSplitCache) rowsFor(m Model, lines []diff.Line) []splitRow {
 		}
 		c.repo, c.file, c.layout = m.repo, m.file, nil
 		c.semanticID, c.difftastic = m.semantic.id, true
+		c.hunkVersion = hunkVersion
 		c.oldSourceLen, c.newSourceLen = len(m.semantic.oldSource), len(m.semantic.newSource)
 		c.rows = rows
 		attachNormalizedSyntax(c.rows, m.currentPath())
@@ -182,11 +188,12 @@ func (c *normalizedSplitCache) rowsFor(m Model, lines []diff.Line) []splitRow {
 		return splitRows(lines)
 	}
 	if c.repo == m.repo && c.file == m.file && c.layout == m.semantic.layout && !c.difftastic &&
-		c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) {
+		c.oldSourceLen == len(m.semantic.oldSource) && c.newSourceLen == len(m.semantic.newSource) && c.hunkVersion == hunkVersion {
 		return c.rows
 	}
 	c.repo, c.file, c.layout = m.repo, m.file, m.semantic.layout
 	c.semanticID, c.difftastic = m.semantic.id, false
+	c.hunkVersion = hunkVersion
 	c.oldSourceLen, c.newSourceLen = len(m.semantic.oldSource), len(m.semantic.newSource)
 	c.rows = buildNormalizedSplitRows(lines, m.semantic.layout, m.semantic.oldSource, m.semantic.newSource)
 	attachNormalizedSyntax(c.rows, m.currentPath())

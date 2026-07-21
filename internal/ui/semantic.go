@@ -60,7 +60,14 @@ func (m Model) desiredSemanticProvider() semanticProvider {
 }
 
 func (m *Model) ensureSemanticAnalysis() tea.Cmd {
-	if !m.semanticReflow || m.repo == nil || m.file < 0 || m.file >= len(m.repo.Files) || m.repo.Files[m.file].Binary {
+	if m.hunkExpansion != nil && m.hunkExpansion.loading && m.hunkExpansion.context != m.hunkExpansionContext() {
+		m.cancelHunkExpansion()
+	}
+	if (m.reviewWork.comparison != nil || m.reviewWork.comparisonLoading) &&
+		!m.reviewComparisonActive() && !m.reviewComparisonLoadingFor(m.file, m.currentPath()) {
+		m.clearReviewComparison()
+	}
+	if m.reviewComparisonActive() || m.reviewComparisonLoadingFor(m.file, m.currentPath()) || !m.semanticReflow || m.repo == nil || m.file < 0 || m.file >= len(m.repo.Files) || m.repo.Files[m.file].Binary {
 		m.cancelSemanticAnalysis()
 		return nil
 	}
@@ -107,7 +114,7 @@ func (m *Model) ensureSemanticAnalysis() tea.Cmd {
 }
 
 func (m *Model) applySemanticResult(msg semanticResultMsg) bool {
-	if !m.semanticReflow || msg.id != m.semantic.id || msg.repo != m.repo || msg.file != m.file ||
+	if m.reviewComparisonActive() || m.reviewComparisonLoadingFor(m.file, m.currentPath()) || !m.semanticReflow || msg.id != m.semantic.id || msg.repo != m.repo || msg.file != m.file ||
 		msg.repo != m.semantic.repo || msg.file != m.semantic.file || msg.provider != m.desiredSemanticProvider() || msg.provider != m.semantic.provider {
 		return false
 	}

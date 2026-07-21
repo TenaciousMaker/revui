@@ -220,7 +220,12 @@ func (m Model) handleSourceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "A", "shift+a":
 		m.cycleFileScope()
 	case " ", "space":
-		m.toggleReviewedFile()
+		return m, m.toggleReviewedFile()
+	case "r":
+		return m, m.toggleAllReviewed()
+	case "u":
+		m.closeSourceView("Returned to the branch diff.")
+		return m, m.toggleReviewComparison()
 	case "d", "enter":
 		m.jumpSourceToDiff()
 	case "up", "k":

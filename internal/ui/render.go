@@ -10,6 +10,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/TenaciousMaker/revui/internal/diff"
+	"github.com/TenaciousMaker/revui/internal/review"
 )
 
 func (m Model) View() tea.View {
@@ -205,12 +206,16 @@ func (m Model) renderFlatFile(fileIndex int, selected, focused bool, width int) 
 	if plainMarker == "" {
 		plainMarker = "M"
 	}
-	reviewed := m.fileReviewed(fileIndex)
+	reviewStatus := m.fileReviewStatus(fileIndex)
+	reviewed := reviewStatus == review.Reviewed
 	reviewMark := m.theme.panel.Render(" ")
 	plainReviewMark := " "
 	if reviewed {
 		reviewMark = m.filePaneStyle(m.theme.addedText).Render("✓")
 		plainReviewMark = "✓"
+	} else if reviewStatus == review.ChangedSinceReview {
+		reviewMark = m.filePaneStyle(m.theme.liveText).Render("↻")
+		plainReviewMark = "↻"
 	}
 	countText := m.fileCountText(file)
 	nameWidth := max(6, width-lipgloss.Width(countText)-9)
@@ -247,6 +252,7 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 	reviewMark := m.theme.panel.Render(" ")
 	plainReviewMark := " "
 	reviewed := false
+	reviewStatus := review.Unreviewed
 	countText := ""
 	var selectedFile *diff.File
 	if node.fileIndex >= 0 {
@@ -257,11 +263,15 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 			plainMarker = "M"
 		}
 		countText = m.fileCountText(file)
-		reviewed = m.fileReviewed(node.fileIndex)
+		reviewStatus = m.fileReviewStatus(node.fileIndex)
+		reviewed = reviewStatus == review.Reviewed
 		selectedFile = &file
 		if reviewed {
 			reviewMark = m.filePaneStyle(m.theme.addedText).Render("✓")
 			plainReviewMark = "✓"
+		} else if reviewStatus == review.ChangedSinceReview {
+			reviewMark = m.filePaneStyle(m.theme.liveText).Render("↻")
+			plainReviewMark = "↻"
 		}
 	}
 	nameWidth := max(4, width-lipgloss.Width(indent)-lipgloss.Width(countText)-9)
@@ -286,21 +296,31 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 }
 
 func (m Model) fileReviewed(fileIndex int) bool {
+	return m.fileReviewStatus(fileIndex) == review.Reviewed
+}
+
+func (m Model) fileReviewStatus(fileIndex int) review.Status {
 	if fileIndex < 0 || fileIndex >= len(m.repo.Files) {
-		return false
+		return review.Unreviewed
 	}
 	file := m.repo.Files[fileIndex]
-	return m.session.IsReviewed(file.Path, fileReviewFingerprint(file))
+	return m.session.Status(file.Path, fileReviewFingerprint(file))
 }
 
 func (m Model) reviewedProgressText() string {
-	reviewed := 0
+	reviewedCount, updatedCount := 0, 0
 	for index := range m.repo.Files {
-		if m.fileReviewed(index) {
-			reviewed++
+		switch m.fileReviewStatus(index) {
+		case review.Reviewed:
+			reviewedCount++
+		case review.ChangedSinceReview:
+			updatedCount++
 		}
 	}
-	return fmt.Sprintf("%d/%d REVIEWED", reviewed, len(m.repo.Files))
+	if updatedCount > 0 {
+		return fmt.Sprintf("%d/%d · %d UPDATED", reviewedCount, len(m.repo.Files), updatedCount)
+	}
+	return fmt.Sprintf("%d/%d REVIEWED", reviewedCount, len(m.repo.Files))
 }
 
 func (m Model) styleFileRow(row string, selected, focused bool, width int) string {
@@ -422,13 +442,15 @@ func (m Model) renderDiff(width, height int) string {
 	}
 	title := sectionStyle.Render(section)
 	if variant != "" {
-		if m.sourcePath == "" && m.ignoreWhitespace && !m.semanticReflow {
+		if m.reviewComparisonActive() {
+			variant += "  SINCE REVIEW"
+		} else if m.sourcePath == "" && m.ignoreWhitespace && !m.semanticReflow {
 			variant += "  NO WS"
 		}
-		if m.sourcePath == "" && m.semanticReflow {
+		if !m.reviewComparisonActive() && m.sourcePath == "" && m.semanticReflow {
 			variant += "  " + m.semanticLabel()
 		}
-		if m.sourcePath == "" && m.normalizedLayout && m.view == split {
+		if !m.reviewComparisonActive() && m.sourcePath == "" && m.normalizedLayout && m.view == split {
 			variant += "  " + m.normalizationLabel()
 		}
 		title += m.theme.muted.Render("  " + variant)
@@ -488,13 +510,25 @@ func (m Model) renderUnifiedLineWithSpans(index int, line diff.Line, width int, 
 	if selected {
 		selectionMark = m.theme.focus.Render("▌")
 	}
+	if line.Collapsed > 0 {
+		content := xansi.Truncate(selectionMark+" "+line.Text, width, "…")
+		style := m.theme.hunk.Width(width).MaxWidth(width)
+		if selected {
+			style = style.Bold(true)
+		}
+		return style.Render(content)
+	}
 	oldNo, newNo := number(line.OldNumber), number(line.NewNumber)
 	gutter := fmt.Sprintf(" %4s %4s %s ", oldNo, newNo, line.Kind.Marker())
 	prefix := selectionMark + m.renderDiffGutter(gutter, line.Kind)
 	contentWidth := max(1, width-lipgloss.Width(prefix))
 	source := truncatePlain(expandTabs(line.Text), contentWidth)
 	if line.Kind != diff.Meta {
-		source = m.highlightDiffLine(line.OriginalIndex, source, syntaxBackground(line.Kind), spans)
+		if line.OriginalIndex < 0 {
+			source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
+		} else {
+			source = m.highlightDiffLine(line.OriginalIndex, source, syntaxBackground(line.Kind), spans)
+		}
 	}
 	row := prefix + source
 	style := m.theme.canvas.Width(width)
@@ -614,7 +648,11 @@ func (m Model) renderSplit(width, height int) string {
 			if selected {
 				marker = m.theme.focus.Render("›")
 			}
-			content := xansi.Truncate(marker+row.meta.Text, width, "")
+			content := marker + row.meta.Text
+			if row.meta.Collapsed > 0 {
+				content = marker + " " + row.meta.Text
+			}
+			content = xansi.Truncate(content, width, "")
 			out = append(out, m.theme.hunk.Width(width).MaxWidth(width).Render(content))
 			continue
 		}
@@ -745,34 +783,34 @@ func (m Model) diffSemanticStyle(kind diff.LineKind) lipgloss.Style {
 }
 
 func (m Model) renderFooter() string {
-	keys := "j/k move   [/] hunk   s split   n normalize   d difft   i whitespace   o source   y copy   ? help"
+	keys := "j/k move   [/] hunk   x context   s split   u review Δ   n normalize   d difft   y copy   ? help"
 	if m.semanticReflow {
-		keys = "j/k move   [/] hunk   s split   n normalized   d difft   o source   y copy   ? help"
+		keys = "j/k move   [/] hunk   x context   s split   u review Δ   n normalized   d difft   y copy   ? help"
 	}
 	if m.difftasticMode {
-		keys = "j/k move   [/] hunk   s split   d raw   o source   y copy   ? help"
+		keys = "j/k move   [/] hunk   x context   s split   u review Δ   d raw   y copy   ? help"
 	}
 	if m.mode == searchingRepository {
 		keys = "type query   ↑↓ results   enter open   esc close"
 	} else if m.sourcePath != "" {
-		keys = "j/k move   o/d diff   y copy   space reviewed   f search   A scope   esc back"
+		keys = "j/k move   o/d diff   y copy   space reviewed   r all   f search   A scope   esc back"
 	} else if m.width < 90 {
-		keys = "tab panes   o full   n normalize*   d difft   i ws   f text   y copy   ? help"
+		keys = "tab panes   x context   o full   n normalize*   d difft   f text   y copy   ? help"
 		if m.semanticReflow {
-			keys = "tab panes   o full   n normalized   d difft   f text   y copy   ? help"
+			keys = "tab panes   x context   o full   n normalized   d difft   f text   y copy   ? help"
 		}
 		if m.difftasticMode {
-			keys = "tab panes   o full   d raw   f text   y copy   ? help"
+			keys = "tab panes   x context   o full   d raw   f text   y copy   ? help"
 		}
 	} else if m.focus == focusFiles {
-		keys = "j/k move   enter open   t tree   A scope   space reviewed   w widen   / jump   ? help"
+		keys = "j/k move   enter open   t tree   A scope   space reviewed   r all   u updates   / jump   ? help"
 	} else if m.width < 135 {
-		keys = "o full   n normalize*   d difft   i whitespace   f text   y copy   ? help"
+		keys = "x context   o full   n normalize*   d difft   f text   y copy   ? help"
 		if m.semanticReflow {
-			keys = "o full   n normalized   d difft   f text   y copy   ? help"
+			keys = "x context   o full   n normalized   d difft   f text   y copy   ? help"
 		}
 		if m.difftasticMode {
-			keys = "o full   d raw   f text   y copy   ? help"
+			keys = "x context   o full   d raw   f text   y copy   ? help"
 		}
 	}
 	status := truncatePlain(m.status, max(10, m.width-len(keys)-5))
@@ -805,7 +843,7 @@ func (m Model) renderSearch() string {
 
 func (m Model) renderHelp() string {
 	return m.theme.focus.Render("REVUI KEYMAP") + "\n\n" +
-		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("d", "optional Difftastic structural split") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Semantic modes ignore formatting whitespace. NORMALIZED inserts visual whitespace only. DIFFT requires difft on PATH; failures preserve the raw Git split. Reviewed progress lives under .git/revui.")
+		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("r", "mark all reviewed / clear all") + m.keyRow("u", "toggle changes since last review") + m.keyRow("x / enter", "expand selected unchanged hunk gap") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("d", "optional Difftastic structural split") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Click ⋯ to expand unchanged context. ✓ is current; ↻ changed since review. Review state lives under .git/revui.")
 }
 
 func (m Model) overlay(background, foreground string, width, height int) string {

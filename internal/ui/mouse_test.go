@@ -253,6 +253,41 @@ func TestMouseClickPositionsFileDiffSplitAndSourceRows(t *testing.T) {
 	}
 }
 
+func TestMouseClickExpandsCollapsedHunkGapInUnifiedAndSplitViews(t *testing.T) {
+	for _, view := range []viewMode{unified, split} {
+		t.Run(map[viewMode]string{unified: "unified", split: "split"}[view], func(t *testing.T) {
+			repo := hunkExpansionTestRepository(t)
+			m, err := newTestModel(t, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := []byte("one\ntwo\nthree\nfour\nfive\nsix\nseven\n")
+			m.repositories = stubSemanticRepository{oldSource: source, newSource: source}
+			m.width, m.height, m.focus, m.view = 140, 24, focusDiff, view
+			gap := collapsedLineIndex(m.currentLines())
+			if gap < 0 {
+				t.Fatal("collapsed gap missing")
+			}
+			if view == split {
+				m.syncSplitCursorToLine()
+			}
+			x, y := 100, 5+gap
+			updated, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			m = updated.(Model)
+			updated, command := m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+			m = updated.(Model)
+			if command == nil {
+				t.Fatal("clicking collapsed row did not schedule expansion")
+			}
+			updated, _ = m.Update(command())
+			m = updated.(Model)
+			if collapsedLineIndex(m.currentLines()) >= 0 {
+				t.Fatalf("mouse did not expand %v gap", view)
+			}
+		})
+	}
+}
+
 func TestMouseWheelScrollsSearchResultsAndViewEnablesMouse(t *testing.T) {
 	repo := &gitrepo.Repository{Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json")}
 	m, err := newTestModel(t, repo)

@@ -102,6 +102,61 @@ func TestReadSourceFallsBackToMergeBaseForDeletedFile(t *testing.T) {
 	}
 }
 
+func TestReviewSourceAndDiffCompareAgainstCapturedWorkingTree(t *testing.T) {
+	root := t.TempDir()
+	run(t, root, "git", "init", "-b", "main")
+	run(t, root, "git", "config", "user.email", "revui@example.test")
+	run(t, root, "git", "config", "user.name", "Revui Test")
+	run(t, root, "git", "config", "commit.gpgsign", "false")
+	write(t, filepath.Join(root, "app.go"), "package app\n\nconst Value = \"base\"\n")
+	run(t, root, "git", "add", "app.go")
+	run(t, root, "git", "commit", "-m", "base")
+	run(t, root, "git", "switch", "-c", "feature")
+	write(t, filepath.Join(root, "app.go"), "package app\n\nconst Value = \"reviewed\"\n")
+
+	reviewedRepo, err := Open(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := reviewedRepo.CaptureReviewSourceContext(context.Background(), reviewedRepo.Files[0])
+	if err != nil || !baseline.Available || !baseline.Exists || !strings.Contains(string(baseline.Content), "reviewed") {
+		t.Fatalf("captured baseline=%#v err=%v", baseline, err)
+	}
+
+	write(t, filepath.Join(root, "app.go"), "package app\n\nconst Value = \"latest\"\n")
+	latestRepo, err := Open(root, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta, current, err := latestRepo.DiffFromReviewContext(context.Background(), latestRepo.Files[0], baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Available || !current.Exists || delta.Path != "app.go" || delta.Additions != 1 || delta.Deletions != 1 {
+		t.Fatalf("current=%#v delta=%#v", current, delta)
+	}
+	var removedReviewed, addedLatest bool
+	for _, line := range delta.Lines {
+		removedReviewed = removedReviewed || line.Kind == diff.Deletion && strings.Contains(line.Text, "reviewed")
+		addedLatest = addedLatest || line.Kind == diff.Addition && strings.Contains(line.Text, "latest")
+	}
+	if !removedReviewed || !addedLatest {
+		t.Fatalf("review delta did not isolate latest edit: %#v", delta.Lines)
+	}
+}
+
+func TestCaptureReviewSourceRepresentsDeletedAndBinaryFilesSafely(t *testing.T) {
+	repo := &Repository{Root: t.TempDir()}
+	deleted, err := repo.CaptureReviewSourceContext(context.Background(), diff.File{Path: "gone.go", Status: "D"})
+	if err != nil || !deleted.Available || deleted.Exists || deleted.Content == nil {
+		t.Fatalf("deleted source=%#v err=%v", deleted, err)
+	}
+	binary, err := repo.CaptureReviewSourceContext(context.Background(), diff.File{Path: "image.bin", Status: "M", Binary: true})
+	if err != nil || binary.Available || !binary.Exists {
+		t.Fatalf("binary source=%#v err=%v", binary, err)
+	}
+}
+
 func TestOpenOutsideRepository(t *testing.T) {
 	_, err := Open(t.TempDir(), "")
 	if err == nil {
