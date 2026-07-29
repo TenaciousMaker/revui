@@ -52,19 +52,23 @@ func (m *Model) restoreSplitLayoutPosition(position splitLayoutPosition) {
 		lines := m.currentLines()
 		if len(lines) == 0 {
 			m.line, m.lineScroll = 0, 0
+			m.lineWrapOffset = 0
 			return
 		}
 		m.line = findLineAnchor(lines, position.cursor)
 		m.lineScroll = clamp(findLineAnchor(lines, position.top), 0, max(0, len(lines)-m.pageSize()))
+		m.lineWrapOffset = 0
 		return
 	}
 	rows := m.currentSplitRows()
 	if len(rows) == 0 {
 		m.line, m.splitCursor, m.splitScroll = 0, 0, 0
+		m.splitWrapOffset = 0
 		return
 	}
 	m.splitCursor = findSplitAnchor(rows, position.cursor)
 	m.splitScroll = clamp(findSplitAnchor(rows, position.top), 0, max(0, len(rows)-m.pageSize()))
+	m.splitWrapOffset = 0
 	m.syncLineFromSplitCursor()
 }
 

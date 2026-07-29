@@ -8,12 +8,6 @@ type entry struct {
 	start, end int
 }
 
-func compareEntries(oldEntries, newEntries []entry) (oldRanges, newRanges []Range) {
-	oldMatched, newMatched := matchEntries(oldEntries, newEntries)
-	oldRanges, newRanges, _ = classifyEntries(oldEntries, newEntries, oldMatched, newMatched)
-	return oldRanges, newRanges
-}
-
 func compareEntriesDetailed(oldEntries, newEntries []entry) (oldRanges, newRanges []Range, pairs []Correspondence) {
 	oldMatched, newMatched := matchEntries(oldEntries, newEntries)
 	return classifyEntries(oldEntries, newEntries, oldMatched, newMatched)

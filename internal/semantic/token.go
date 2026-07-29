@@ -54,7 +54,7 @@ func tokenEntries(ctx context.Context, source []byte) ([]entry, error) {
 			key = "comment\x00" + normalizedComment(string(source[start:end]))
 		case start+1 < len(source) && source[start] == '/' && source[start+1] == '*':
 			end = start + 2
-			for end+1 < len(source) && !(source[end] == '*' && source[end+1] == '/') {
+			for end+1 < len(source) && (source[end] != '*' || source[end+1] != '/') {
 				end++
 			}
 			if end+1 < len(source) {

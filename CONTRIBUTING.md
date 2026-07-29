@@ -15,6 +15,7 @@ revui requires Go 1.25 or newer and Git.
 ```sh
 git clone https://github.com/TenaciousMaker/revui.git
 cd revui
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 make check
 make build
 ```

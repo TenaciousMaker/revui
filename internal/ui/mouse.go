@@ -22,6 +22,7 @@ const (
 	wheelPaneCode
 	wheelPaneFuzzySearch
 	wheelPaneRepositorySearch
+	wheelPaneHelp
 )
 
 type mouseWheelFrameMsg struct{}
@@ -103,6 +104,8 @@ func (m Model) wheelPaneAt(x, y int) wheelPane {
 		return wheelPaneFuzzySearch
 	case searchingRepository:
 		return wheelPaneRepositorySearch
+	case showHelp:
+		return wheelPaneHelp
 	case normal:
 		// Continue below for the main file and code panes.
 	default:
@@ -126,9 +129,11 @@ func (m Model) wheelPaneAt(x, y int) wheelPane {
 func (m *Model) applyMouseWheel(target wheelPane, direction int) {
 	switch target {
 	case wheelPaneFuzzySearch:
-		m.searchTop = clamp(m.searchTop+direction, 0, max(0, len(m.searchHits)-10))
+		m.searchTop = clamp(m.searchTop+direction, 0, max(0, len(m.searchHits)-m.fileSearchPageSize()))
 	case wheelPaneRepositorySearch:
 		m.repoSearchTop = clamp(m.repoSearchTop+direction, 0, max(0, len(m.repoHits)-1))
+	case wheelPaneHelp:
+		m.scrollHelp(direction)
 	case wheelPaneFiles:
 		m.scrollFiles(direction)
 	case wheelPaneCode:
@@ -139,6 +144,9 @@ func (m *Model) applyMouseWheel(target wheelPane, direction int) {
 type mousePoint struct{ x, y int }
 
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) Model {
+	if m.mode == showHelp {
+		return m
+	}
 	if msg.Button != tea.MouseLeft {
 		m.clearMouseSelection()
 		return m
@@ -266,8 +274,7 @@ func (m *Model) positionCodeRow(screenY int) {
 		return
 	}
 	if m.view == split {
-		index := m.splitScroll + visualRow
-		if index >= 0 && index < len(m.currentSplitRows()) {
+		if index, ok := m.splitRowAtWrappedVisualRow(visualRow); ok {
 			m.splitCursor = index
 			m.syncLineFromSplitCursor()
 		}
@@ -279,22 +286,17 @@ func (m *Model) positionCodeRow(screenY int) {
 }
 
 func (m Model) unifiedLineAtVisualRow(target int) (int, bool) {
-	lines := m.currentLines()
-	index := clamp(m.lineScroll, 0, max(0, len(lines)-1)) + target
-	if index >= 0 && index < len(lines) {
-		return index, true
-	}
-	return 0, false
+	return m.unifiedLineAtWrappedVisualRow(target)
 }
 
 func (m *Model) clickFileSearchResult(x, y int) {
-	width, height := min(72, m.width-4), min(18, m.height-4)
+	width, height := m.searchModalSize()
 	box, left, top := m.modalLayout(m.renderSearch(), width, height)
 	if x < left || x >= left+lipgloss.Width(box) || y < top+6 {
 		return
 	}
 	index := m.searchTop + y - (top + 6)
-	if index >= m.searchTop && index < min(m.searchTop+10, len(m.searchHits)) {
+	if index >= m.searchTop && index < min(m.searchTop+m.fileSearchPageSize(), len(m.searchHits)) {
 		m.searchAt = index
 	}
 }
@@ -429,8 +431,8 @@ func (m *Model) scrollCode(delta int) {
 		return
 	}
 	if m.view == split {
-		m.splitScroll = clamp(m.splitScroll+delta, 0, max(0, len(m.currentSplitRows())-m.pageSize()))
+		m.scrollSplitVisual(delta)
 		return
 	}
-	m.lineScroll = clamp(m.lineScroll+delta, 0, max(0, len(m.currentLines())-m.pageSize()))
+	m.scrollUnifiedVisual(delta)
 }

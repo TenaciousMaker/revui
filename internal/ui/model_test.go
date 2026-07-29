@@ -186,6 +186,68 @@ func TestDialogOverlayPreservesReviewAndHugsContent(t *testing.T) {
 	}
 }
 
+func TestHelpDialogScrollsWithinShortViewport(t *testing.T) {
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "service.go", Lines: []diff.Line{{Kind: diff.Addition, Text: "func changed() {}", NewNumber: 1}}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.mode = 80, 14, showHelp
+
+	initial := xansi.Strip(m.View().Content)
+	if !strings.Contains(initial, "REVUI KEYMAP") {
+		t.Fatalf("help dialog did not render its heading:\n%s", initial)
+	}
+	if strings.Contains(strings.Join(strings.Fields(initial), " "), "q quit") {
+		t.Fatalf("short help dialog unexpectedly shows its final row before scrolling:\n%s", initial)
+	}
+
+	for range 30 {
+		updated, _ := m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
+		m = updated.(Model)
+	}
+	scrolled := xansi.Strip(m.View().Content)
+	if !strings.Contains(strings.Join(strings.Fields(scrolled), " "), "q quit") {
+		t.Fatalf("help dialog did not reveal its clipped final row after scrolling:\n%s", scrolled)
+	}
+	if got := lipgloss.Height(m.View().Content); got > m.height {
+		t.Fatalf("scrolled help height=%d, want <= terminal height %d", got, m.height)
+	}
+}
+
+func TestFuzzyDialogKeepsResultsAndControlsVisibleInShortViewport(t *testing.T) {
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+	}
+	for index := range 12 {
+		repo.Files = append(repo.Files, diff.File{Path: fmt.Sprintf("file%02d.go", index)})
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.mode = 80, 16, searching
+	m.updateSearch()
+
+	for range 7 {
+		updated, _ := m.Update(tea.KeyPressMsg{Text: "", Code: tea.KeyDown})
+		m = updated.(Model)
+	}
+	rendered := xansi.Strip(m.View().Content)
+	if !strings.Contains(rendered, "file07.go") {
+		t.Fatalf("selected fuzzy result was clipped from the dialog:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "esc") || !strings.Contains(rendered, "close") {
+		t.Fatalf("fuzzy dialog controls were clipped:\n%s", rendered)
+	}
+	if got := lipgloss.Height(m.View().Content); got > m.height {
+		t.Fatalf("fuzzy dialog height=%d, want <= terminal height %d", got, m.height)
+	}
+}
+
 func TestRepositorySearchRendersChunksAndOpensExactSourceLine(t *testing.T) {
 	root := t.TempDir()
 	path := "src/service.go"
@@ -1293,7 +1355,40 @@ func TestUnifiedCursorUsesReservedGutterWithoutChangingRowWidth(t *testing.T) {
 	}
 }
 
-func TestSplitRenderExpandsTabsWithoutWrappingRows(t *testing.T) {
+func TestUnifiedDiffWrapsLongLinesByDefault(t *testing.T) {
+	longLine := "return buildWorkspaceRecommendation(account, requestedAssignee, currentOwner, availableTeammates)"
+	repo := &gitrepo.Repository{
+		Root:       t.TempDir(),
+		Branch:     "feature",
+		Base:       "main",
+		ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{
+			Path: "main.go",
+			Lines: []diff.Line{
+				{Kind: diff.Addition, Text: longLine, NewNumber: 1},
+			},
+		}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := m.renderUnified(44, 10)
+	physicalLines := strings.Split(output, "\n")
+	if len(physicalLines) < 2 {
+		t.Fatalf("unified line did not wrap:\n%s", output)
+	}
+	if strings.Contains(xansi.Strip(output), "…") || !strings.Contains(xansi.Strip(output), "availableTeammates)") {
+		t.Fatalf("unified wrap lost the end of the source line:\n%s", xansi.Strip(output))
+	}
+	for row, rendered := range physicalLines {
+		if got := lipgloss.Width(rendered); got > 44 {
+			t.Fatalf("unified row %d width=%d, want <=44:\n%s", row, got, output)
+		}
+	}
+}
+
+func TestSplitDiffWrapsLongLinesByDefault(t *testing.T) {
 	repo := &gitrepo.Repository{
 		Root:       t.TempDir(),
 		Branch:     "feature",
@@ -1312,8 +1407,17 @@ func TestSplitRenderExpandsTabsWithoutWrappingRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := m.renderSplit(78, 10)
-	if got := len(strings.Split(output, "\n")); got != 2 {
-		t.Fatalf("split row wrapped into %d lines:\n%s", got, output)
+	if got := len(strings.Split(output, "\n")); got <= 2 {
+		t.Fatalf("split row did not wrap; rendered %d lines:\n%s", got, output)
+	}
+	plain := xansi.Strip(output)
+	if strings.Contains(plain, "…") || !strings.Contains(plain, "// indirect") {
+		t.Fatalf("split wrap lost the end of the source line:\n%s", plain)
+	}
+	for row, rendered := range strings.Split(output, "\n") {
+		if got := lipgloss.Width(rendered); got > 78 {
+			t.Fatalf("split row %d width=%d, want <=78:\n%s", row, got, output)
+		}
 	}
 }
 

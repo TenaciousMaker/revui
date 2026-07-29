@@ -31,8 +31,10 @@ type contentPaneState struct {
 	view             viewMode
 	line             int
 	lineScroll       int
+	lineWrapOffset   int
 	splitCursor      int
 	splitScroll      int
+	splitWrapOffset  int
 	selectFrom       int
 	sourcePath       string
 	sourceLines      []string
@@ -83,5 +85,6 @@ type viewportState struct {
 	wheelLastAt        time.Time
 	wheelLastDirection int
 	wheelLastTarget    wheelPane
+	helpScroll         int
 	now                func() time.Time
 }

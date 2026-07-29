@@ -58,9 +58,11 @@ func (m Model) renderView() tea.View {
 	content = m.renderMouseSelection(content)
 	switch m.mode {
 	case searching:
-		content = m.overlay(content, m.renderSearch(), min(72, m.width-4), min(18, m.height-4))
+		width, height := m.searchModalSize()
+		content = m.overlay(content, m.renderSearch(), width, height)
 	case showHelp:
-		content = m.overlay(content, m.renderHelp(), min(82, m.width-4), min(28, m.height-4))
+		width, height := m.helpModalSize()
+		content = m.overlay(content, m.renderHelp(), width, height)
 	}
 	view := tea.NewView(content)
 	view.AltScreen = true
@@ -252,7 +254,6 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 	reviewMark := m.theme.panel.Render(" ")
 	plainReviewMark := " "
 	reviewed := false
-	reviewStatus := review.Unreviewed
 	countText := ""
 	var selectedFile *diff.File
 	if node.fileIndex >= 0 {
@@ -263,7 +264,7 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 			plainMarker = "M"
 		}
 		countText = m.fileCountText(file)
-		reviewStatus = m.fileReviewStatus(node.fileIndex)
+		reviewStatus := m.fileReviewStatus(node.fileIndex)
 		reviewed = reviewStatus == review.Reviewed
 		selectedFile = &file
 		if reviewed {
@@ -276,10 +277,8 @@ func (m Model) renderTreeNode(node fileTreeNode, selected, focused bool, width i
 	}
 	nameWidth := max(4, width-lipgloss.Width(indent)-lipgloss.Width(countText)-9)
 	name := shortPath(node.name, nameWidth)
-	nameStyle := m.theme.panel
-	if node.fileIndex < 0 {
-		nameStyle = m.filePaneStyle(m.theme.muted)
-	} else {
+	nameStyle := m.filePaneStyle(m.theme.muted)
+	if node.fileIndex >= 0 {
 		nameStyle = m.filePaneStyle(m.statusStyle(m.repo.Files[node.fileIndex].Status))
 	}
 	row := m.theme.panel.Render(" "+indent) + reviewMark + m.theme.panel.Render(" ") + marker + m.theme.panel.Render(" ") + nameStyle.Render(name)
@@ -486,12 +485,16 @@ func (m Model) renderUnified(width, height int) string {
 		return m.theme.muted.Render("No textual changes in this file.")
 	}
 	var out []string
-	used := 0
 	spans := m.currentIntralineSpans()
-	for i := clamp(m.lineScroll, 0, len(lines)-1); i < len(lines) && used < height; i++ {
+	start := clamp(m.lineScroll, 0, len(lines)-1)
+	for i := start; i < len(lines) && len(out) < height; i++ {
 		row := m.renderUnifiedLineWithSpans(i, lines[i], width, spans[i])
-		out = append(out, row)
-		used++
+		physical := strings.Split(row, "\n")
+		if i == start {
+			physical = physical[min(m.lineWrapOffset, len(physical)):]
+		}
+		remaining := height - len(out)
+		out = append(out, physical[:min(len(physical), remaining)]...)
 	}
 	return strings.Join(out, "\n")
 }
@@ -511,18 +514,21 @@ func (m Model) renderUnifiedLineWithSpans(index int, line diff.Line, width int, 
 		selectionMark = m.theme.focus.Render("▌")
 	}
 	if line.Collapsed > 0 {
-		content := xansi.Truncate(selectionMark+" "+line.Text, width, "…")
+		physical := wrapANSI(selectionMark+" "+line.Text, width)
 		style := m.theme.hunk.Width(width).MaxWidth(width)
 		if selected {
 			style = style.Bold(true)
 		}
-		return style.Render(content)
+		for index := range physical {
+			physical[index] = style.Render(physical[index])
+		}
+		return strings.Join(physical, "\n")
 	}
 	oldNo, newNo := number(line.OldNumber), number(line.NewNumber)
 	gutter := fmt.Sprintf(" %4s %4s %s ", oldNo, newNo, line.Kind.Marker())
 	prefix := selectionMark + m.renderDiffGutter(gutter, line.Kind)
 	contentWidth := max(1, width-lipgloss.Width(prefix))
-	source := truncatePlain(expandTabs(line.Text), contentWidth)
+	source := expandTabs(line.Text)
 	if line.Kind != diff.Meta {
 		if line.OriginalIndex < 0 {
 			source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
@@ -530,7 +536,7 @@ func (m Model) renderUnifiedLineWithSpans(index int, line diff.Line, width int, 
 			source = m.highlightDiffLine(line.OriginalIndex, source, syntaxBackground(line.Kind), spans)
 		}
 	}
-	row := prefix + source
+	sourceRows := wrapANSI(source, contentWidth)
 	style := m.theme.canvas.Width(width)
 	switch line.Kind {
 	case diff.Addition:
@@ -543,7 +549,15 @@ func (m Model) renderUnifiedLineWithSpans(index int, line diff.Line, width int, 
 	if selected {
 		style = style.Bold(true)
 	}
-	return style.Render(row)
+	continuationPrefix := selectionMark + strings.Repeat(" ", lipgloss.Width(gutter))
+	for index := range sourceRows {
+		rowPrefix := continuationPrefix
+		if index == 0 {
+			rowPrefix = prefix
+		}
+		sourceRows[index] = style.Render(rowPrefix + sourceRows[index])
+	}
+	return strings.Join(sourceRows, "\n")
 }
 
 type splitRow struct {
@@ -643,6 +657,7 @@ func (m Model) renderSplit(width, height int) string {
 	for i := start; i < len(rows) && len(out) < height; i++ {
 		row := rows[i]
 		selected := i == m.splitCursor && m.focus == focusDiff
+		var physical []string
 		if row.meta != nil {
 			marker := " "
 			if selected {
@@ -652,35 +667,54 @@ func (m Model) renderSplit(width, height int) string {
 			if row.meta.Collapsed > 0 {
 				content = marker + " " + row.meta.Text
 			}
-			content = xansi.Truncate(content, width, "")
-			out = append(out, m.theme.hunk.Width(width).MaxWidth(width).Render(content))
-			continue
+			physical = wrapANSI(content, width)
+			style := m.theme.hunk.Width(width).MaxWidth(width)
+			for index := range physical {
+				physical[index] = style.Render(physical[index])
+			}
+		} else {
+			oldSyntaxIndex, newSyntaxIndex := -1, -1
+			if row.old != nil {
+				oldSyntaxIndex = row.old.OriginalIndex
+			}
+			if row.new != nil {
+				newSyntaxIndex = row.new.OriginalIndex
+			}
+			var oldSpans, newSpans []textSpan
+			if row.oldIndex >= 0 {
+				oldSpans = spans[row.oldIndex]
+			}
+			if row.newIndex >= 0 {
+				newSpans = spans[row.newIndex]
+			}
+			if row.normalized {
+				oldSyntaxIndex, newSyntaxIndex = -1, -1
+				oldSpans, newSpans = row.oldSpans, row.newSpans
+			}
+			left := strings.Split(m.renderSplitCellAt(row.old, oldSyntaxIndex, half, selected, true, oldSpans, row.normalized, row.oldSyntax), "\n")
+			right := strings.Split(m.renderSplitCellAt(row.new, newSyntaxIndex, width-half-1, selected, false, newSpans, row.normalized, row.newSyntax), "\n")
+			blankLeft := m.renderSplitCellAt(nil, -1, half, false, true, nil, false, nil)
+			blankRight := m.renderSplitCellAt(nil, -1, width-half-1, false, false, nil, false, nil)
+			divider := m.theme.border.Render("│")
+			if selected {
+				divider = m.theme.focus.Render("│")
+			}
+			for visual := 0; visual < max(len(left), len(right)); visual++ {
+				leftRow, rightRow := blankLeft, blankRight
+				if visual < len(left) {
+					leftRow = left[visual]
+				}
+				if visual < len(right) {
+					rightRow = right[visual]
+				}
+				physical = append(physical, leftRow+divider+rightRow)
+			}
 		}
-		oldSyntaxIndex, newSyntaxIndex := -1, -1
-		if row.old != nil {
-			oldSyntaxIndex = row.old.OriginalIndex
+		if i == start {
+			physical = physical[min(m.splitWrapOffset, len(physical)):]
 		}
-		if row.new != nil {
-			newSyntaxIndex = row.new.OriginalIndex
-		}
-		var oldSpans, newSpans []textSpan
-		if row.oldIndex >= 0 {
-			oldSpans = spans[row.oldIndex]
-		}
-		if row.newIndex >= 0 {
-			newSpans = spans[row.newIndex]
-		}
-		if row.normalized {
-			oldSyntaxIndex, newSyntaxIndex = -1, -1
-			oldSpans, newSpans = row.oldSpans, row.newSpans
-		}
-		left := m.renderSplitCellAt(row.old, oldSyntaxIndex, half, selected, true, oldSpans, row.normalized, row.oldSyntax)
-		right := m.renderSplitCellAt(row.new, newSyntaxIndex, width-half-1, selected, false, newSpans, row.normalized, row.newSyntax)
-		divider := m.theme.border.Render("│")
-		if selected {
-			divider = m.theme.focus.Render("│")
-		}
-		out = append(out, left+divider+right)
+		remaining := height - len(out)
+		out = append(out, physical[:min(len(physical), remaining)]...)
 	}
 	return strings.Join(out, "\n")
 }
@@ -728,12 +762,11 @@ func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected
 			source = m.highlightVirtualDiffLine(source, syntaxBackground(line.Kind), spans)
 		}
 	} else if lineIndex >= 0 {
-		source = m.highlightDiffLine(lineIndex, xansi.Truncate(source, contentWidth, "…"), syntaxBackground(line.Kind), spans)
+		source = m.highlightDiffLine(lineIndex, source, syntaxBackground(line.Kind), spans)
 	} else {
-		source = m.highlightLine(m.currentPath(), xansi.Truncate(source, contentWidth, "…"), syntaxBackground(line.Kind))
+		source = m.highlightLine(m.currentPath(), source, syntaxBackground(line.Kind))
 	}
-	source = xansi.Truncate(source, contentWidth, "…")
-	content := xansi.Truncate(prefix+source, width, "")
+	sourceRows := wrapANSI(source, contentWidth)
 	style := m.theme.canvas.Width(width).MaxWidth(width)
 	switch line.Kind {
 	case diff.Addition:
@@ -744,7 +777,15 @@ func (m Model) renderSplitCellAt(line *diff.Line, lineIndex, width int, selected
 	if selected {
 		style = style.Bold(true)
 	}
-	return style.Render(content)
+	continuationPrefix := " " + strings.Repeat(" ", lipgloss.Width(gutter))
+	for index := range sourceRows {
+		rowPrefix := continuationPrefix
+		if index == 0 {
+			rowPrefix = prefix
+		}
+		sourceRows[index] = style.Render(rowPrefix + sourceRows[index])
+	}
+	return strings.Join(sourceRows, "\n")
 }
 
 func syntaxBackground(kind diff.LineKind) string {
@@ -821,7 +862,7 @@ func (m Model) renderFooter() string {
 func (m Model) renderSearch() string {
 	lines := []string{m.theme.focus.Render("JUMP TO FILE"), "", m.theme.text.Render("› " + m.inputWithCursor()), m.theme.border.Render(strings.Repeat("─", max(1, min(66, m.width-10))))}
 	for i := clamp(m.searchTop, 0, max(0, len(m.searchHits)-1)); i < len(m.searchHits); i++ {
-		if i >= m.searchTop+10 {
+		if i >= m.searchTop+m.fileSearchPageSize() {
 			break
 		}
 		fileIndex := m.searchHits[i]
@@ -842,6 +883,24 @@ func (m Model) renderSearch() string {
 }
 
 func (m Model) renderHelp() string {
+	lines := m.helpLines()
+	start := clamp(m.helpScroll, 0, max(0, len(lines)-m.helpPageSize()))
+	end := min(len(lines), start+m.helpPageSize())
+	visible := append([]string(nil), lines[start:end]...)
+	_, modalHeight := m.helpModalSize()
+	if modalContentHeight(modalHeight) > 1 {
+		direction := "↓"
+		if start > 0 && end < len(lines) {
+			direction = "↑↓"
+		} else if start > 0 {
+			direction = "↑"
+		}
+		visible = append(visible, m.theme.muted.Render(direction+"  j/k · ↑/↓ · wheel scroll   esc close"))
+	}
+	return strings.Join(visible, "\n")
+}
+
+func (m Model) renderHelpContent() string {
 	return m.theme.focus.Render("REVUI KEYMAP") + "\n\n" +
 		m.keyRow("j / k · ↑ / ↓", "move") + m.keyRow("mouse click / wheel", "position row / scroll pane") + m.keyRow("mouse drag then y", "copy selected text") + m.keyRow("tab · h / l", "switch pane or collapse tree") + m.keyRow("t", "toggle flat / tree files") + m.keyRow("A", "cycle changed / context / all files") + m.keyRow("space", "toggle selected changed file reviewed") + m.keyRow("r", "mark all reviewed / clear all") + m.keyRow("u", "toggle changes since last review") + m.keyRow("x / enter", "expand selected unchanged hunk gap") + m.keyRow("o", "toggle full-file source / diff") + m.keyRow("i", "ignore whitespace-only changes (raw diff)") + m.keyRow("e", "experimental semantic highlighting") + m.keyRow("n", "normalized AST split layout") + m.keyRow("d", "optional Difftastic structural split") + m.keyRow("w", "fit / restore file pane width") + m.keyRow("enter", "open file or toggle folder") + m.keyRow("/", "fuzzy jump to changed file") + m.keyRow("f", "search text across repository") + m.keyRow("v then move", "select a line range") + m.keyRow("y", "copy current line or selected range") + m.keyRow("[ / ]", "previous / next hunk") + m.keyRow("s", "toggle unified / split") + m.keyRow("R", "refresh Git diff") + m.keyRow("q", "quit") + "\n" + m.theme.muted.Render("Click ⋯ to expand unchanged context. ✓ is current; ↻ changed since review. Review state lives under .git/revui.")
 }
@@ -865,15 +924,13 @@ func (m Model) overlay(background, foreground string, width, height int) string 
 }
 
 func (m Model) modalLayout(foreground string, maxWidth, maxHeight int) (box string, x, y int) {
-	const horizontalFrame = 6 // two border cells plus two cells of padding on each side
-	const verticalFrame = 4   // two border cells plus one row of padding above and below
-	contentWidth := max(1, maxWidth-horizontalFrame)
-	contentHeight := max(1, maxHeight-verticalFrame)
+	contentWidth := modalContentWidth(maxWidth)
+	contentHeight := modalContentHeight(maxHeight)
+	foreground = fitModalContent(foreground, contentWidth, contentHeight)
 	boxStyle := m.theme.panel.
 		BorderStyle(lipgloss.RoundedBorder()).
 		Padding(1, 2).
-		Width(contentWidth).
-		MaxHeight(contentHeight)
+		Width(max(1, maxWidth))
 	if m.theme.color {
 		boxStyle = boxStyle.BorderForeground(lipgloss.Color("#58A6FF"))
 	}
@@ -882,6 +939,28 @@ func (m Model) modalLayout(foreground string, maxWidth, maxHeight int) (box stri
 	x = max(0, (m.width-boxWidth)/2)
 	y = max(0, (m.height-boxHeight)/2)
 	return box, x, y
+}
+
+const (
+	modalHorizontalFrame = 6 // two border cells plus two cells of padding on each side
+	modalVerticalFrame   = 4 // two border cells plus one row of padding above and below
+)
+
+func modalContentWidth(maxWidth int) int {
+	return max(1, maxWidth-modalHorizontalFrame)
+}
+
+func modalContentHeight(maxHeight int) int {
+	return max(1, maxHeight-modalVerticalFrame)
+}
+
+func fitModalContent(content string, width, height int) string {
+	lines := strings.Split(content, "\n")
+	lines = lines[:min(len(lines), max(1, height))]
+	for index := range lines {
+		lines[index] = xansi.Truncate(lines[index], max(1, width), "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) statusMarker(status string) string {

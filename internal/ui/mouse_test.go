@@ -200,6 +200,48 @@ func TestMouseWheelUsesVisualRowsInSplitAndSourceViews(t *testing.T) {
 	}
 }
 
+func TestMouseWheelAndClickUseWrappedVisualRows(t *testing.T) {
+	longLine := strings.Repeat("wrapped source content ", 12)
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "app.go", Lines: []diff.Line{
+			{Kind: diff.Addition, Text: longLine, NewNumber: 1},
+			{Kind: diff.Addition, Text: "next logical line", NewNumber: 2},
+		}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus = 80, 12, focusDiff
+
+	m.positionCodeRow(7)
+	if m.line != 0 {
+		t.Fatalf("click on wrapped continuation selected logical line %d, want 0", m.line)
+	}
+
+	updated, _ := m.Update(tea.MouseWheelMsg{X: 60, Y: 7, Button: tea.MouseWheelDown})
+	m = updated.(Model)
+	if m.lineScroll != 0 || m.lineWrapOffset != 1 {
+		t.Fatalf("wheel skipped wrapped continuation: line=%d offset=%d", m.lineScroll, m.lineWrapOffset)
+	}
+
+	m = m.flushMouseWheel()
+	m.view = split
+	m.lineScroll, m.lineWrapOffset = 0, 0
+	m.splitCursor, m.splitScroll, m.splitWrapOffset = 0, 0, 0
+	m.wheelVelocity, m.wheelLastAt = 0, time.Time{}
+	m.positionCodeRow(7)
+	if m.splitCursor != 0 {
+		t.Fatalf("split click on wrapped continuation selected row %d, want 0", m.splitCursor)
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg{X: 60, Y: 7, Button: tea.MouseWheelDown})
+	m = updated.(Model)
+	if m.splitScroll != 0 || m.splitWrapOffset != 1 {
+		t.Fatalf("split wheel skipped wrapped continuation: row=%d offset=%d", m.splitScroll, m.splitWrapOffset)
+	}
+}
+
 func TestMouseClickPositionsFileDiffSplitAndSourceRows(t *testing.T) {
 	repo := &gitrepo.Repository{
 		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
@@ -334,6 +376,30 @@ func TestMouseWheelScrollsFuzzyResultsWithoutMovingSelection(t *testing.T) {
 	m = updated.(Model)
 	if m.searchAt != mouseWheelStep {
 		t.Fatalf("click after fuzzy scroll selected %d, want %d", m.searchAt, mouseWheelStep)
+	}
+}
+
+func TestMouseWheelScrollsHelpDialogInsteadOfUnderlyingPane(t *testing.T) {
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "app.go", Lines: []diff.Line{
+			{Kind: diff.Addition, Text: "first", NewNumber: 1},
+			{Kind: diff.Addition, Text: "second", NewNumber: 2},
+		}}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus, m.mode = 80, 14, focusDiff, showHelp
+
+	updated, _ := m.Update(tea.MouseWheelMsg{X: 40, Y: 7, Button: tea.MouseWheelDown})
+	m = updated.(Model)
+	if m.helpScroll == 0 {
+		t.Fatal("mouse wheel did not scroll the help dialog")
+	}
+	if m.lineScroll != 0 || m.lineWrapOffset != 0 {
+		t.Fatalf("help wheel leaked to underlying diff: line=%d offset=%d", m.lineScroll, m.lineWrapOffset)
 	}
 }
 

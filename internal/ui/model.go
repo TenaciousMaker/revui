@@ -175,8 +175,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.clampWrappedScroll()
+		m.clampHelpScroll()
 		if m.mode == searchingRepository {
 			m.ensureRepositorySearchVisible()
+		}
+		if m.mode == searching {
+			m.ensureFileSearchVisible()
 		}
 		m.ensureVisible()
 		return m, m.ensureSemanticAnalysis()
@@ -310,8 +315,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleRepositorySearch(msg)
 	}
 	if m.mode == showHelp {
-		if msg.String() == "esc" || msg.String() == "?" || msg.String() == "q" {
+		switch msg.String() {
+		case "esc", "?", "q":
 			m.mode = normal
+			m.helpScroll = 0
+		case "up", "k":
+			m.scrollHelp(-1)
+		case "down", "j":
+			m.scrollHelp(1)
+		case "pgup", "ctrl+u":
+			m.scrollHelp(-m.helpPageSize())
+		case "pgdown", "ctrl+d", " ", "space":
+			m.scrollHelp(m.helpPageSize())
+		case "home", "g":
+			m.helpScroll = 0
+		case "end", "G", "shift+g":
+			m.helpScroll = m.helpScrollLimit()
 		}
 		return m, nil
 	}
@@ -329,6 +348,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "?":
 		m.mode = showHelp
+		m.helpScroll = 0
 	case "tab":
 		if m.width < 90 {
 			m.focus = 1 - m.focus
@@ -584,15 +604,10 @@ func (m *Model) ensureVisible() {
 		return
 	}
 	if m.focus != focusFiles {
-		cursor, scroll := m.line, &m.lineScroll
 		if m.view == split {
-			cursor, scroll = m.splitCursor, &m.splitScroll
-		}
-		if cursor < *scroll {
-			*scroll = cursor
-		}
-		if cursor >= *scroll+page {
-			*scroll = cursor - page + 1
+			m.ensureSplitCursorVisible()
+		} else {
+			m.ensureUnifiedCursorVisible()
 		}
 	}
 }
@@ -876,6 +891,7 @@ func (m *Model) collapseTreeNodeOrSelectParent() {
 func (m *Model) resetLineCursor() {
 	m.line, m.lineScroll = 0, 0
 	m.splitCursor, m.splitScroll = 0, 0
+	m.lineWrapOffset, m.splitWrapOffset = 0, 0
 	m.selectFrom = -1
 }
 
@@ -933,7 +949,7 @@ func (m *Model) updateSearch() {
 }
 
 func (m *Model) ensureFileSearchVisible() {
-	const page = 10
+	page := m.fileSearchPageSize()
 	m.searchAt = clamp(m.searchAt, 0, max(0, len(m.searchHits)-1))
 	if m.searchAt < m.searchTop {
 		m.searchTop = m.searchAt
@@ -1109,6 +1125,7 @@ func (m *Model) applyRefresh(repo *gitrepo.Repository, automatic bool) {
 	if !hadSource {
 		m.line = clamp(oldLine, 0, max(0, len(m.currentLines())-1))
 		m.lineScroll = min(m.lineScroll, m.line)
+		m.lineWrapOffset, m.splitWrapOffset = 0, 0
 		m.syncSplitCursorToLine()
 	}
 	m.selectFrom = -1

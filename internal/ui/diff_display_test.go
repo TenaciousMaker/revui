@@ -62,6 +62,22 @@ func TestCollapsedGapExpandsFromKeyboardWithoutReloadingGit(t *testing.T) {
 	}
 }
 
+func TestExpandedGapRemovesInternalHunkHeader(t *testing.T) {
+	base := hunkExpansionTestRepository(t).Files[0].Lines
+	gap := hunkGapKey{oldStart: 3, newStart: 3, count: 4}
+	source := []string{"one", "two", "three", "four", "five", "six", "seven"}
+
+	lines, _ := buildExpandableDiffLines(base, map[hunkGapKey]bool{gap: true}, source, source)
+	for _, line := range lines {
+		if line.Kind == diff.Meta && line.Hunk == 1 {
+			t.Fatalf("expanded gap retained internal hunk header: %#v", line)
+		}
+	}
+	if len(lines) == 0 || lines[0].Kind != diff.Meta || lines[0].Hunk != 0 {
+		t.Fatalf("first hunk header was not preserved: %#v", lines)
+	}
+}
+
 func TestCollapsedGapSourceReadHonorsCancellation(t *testing.T) {
 	repo := hunkExpansionTestRepository(t)
 	m, err := newTestModel(t, repo)

@@ -118,8 +118,3 @@ func ignoredPath(root, path string) bool {
 	}
 	return relative == ".git" || strings.HasPrefix(relative, ".git"+string(filepath.Separator))
 }
-
-func withinRoot(root, path string) bool {
-	relative, err := filepath.Rel(root, path)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}

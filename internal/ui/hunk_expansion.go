@@ -136,6 +136,7 @@ func buildExpandableDiffLines(base []diff.Line, expanded map[hunkGapKey]bool, ol
 	lastOld, lastNew, previousHunk := 0, 0, -1
 	hasGaps := false
 	for _, line := range base {
+		suppressHeader := false
 		if line.Kind == diff.Meta && line.Collapsed == 0 {
 			oldStart, newStart, ok := hunkStarts(line.Text)
 			if ok && previousHunk >= 0 && line.Hunk == previousHunk+1 {
@@ -151,6 +152,7 @@ func buildExpandableDiffLines(base []diff.Line, expanded map[hunkGapKey]bool, ol
 								Hunk: previousHunk, OriginalIndex: -(oldNumber + 1),
 							})
 						}
+						suppressHeader = true
 					} else {
 						result = append(result, diff.Line{
 							Kind: diff.Meta, Text: fmt.Sprintf("⋯ %d unchanged lines · click or x to expand", gap.count),
@@ -162,7 +164,9 @@ func buildExpandableDiffLines(base []diff.Line, expanded map[hunkGapKey]bool, ol
 			}
 			previousHunk = line.Hunk
 		}
-		result = append(result, line)
+		if !suppressHeader {
+			result = append(result, line)
+		}
 		if line.OldNumber > 0 {
 			lastOld = line.OldNumber
 		}

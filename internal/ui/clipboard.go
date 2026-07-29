@@ -114,8 +114,12 @@ func (m Model) normalizedMouseClipboardSelection() (string, int, sourceRange, so
 		return "", 0, sourceRange{}, sourceRange{}
 	}
 	start, end := orderedMousePoints(m.mouseSelectStart, m.mouseSelectEnd)
-	first := clamp(m.splitScroll+max(0, start.y-5), 0, len(rows)-1)
-	last := clamp(m.splitScroll+max(0, end.y-5), first, len(rows)-1)
+	first, firstOK := m.splitRowAtWrappedVisualRow(max(0, start.y-5))
+	last, lastOK := m.splitRowAtWrappedVisualRow(max(0, end.y-5))
+	if !firstOK || !lastOK {
+		return "", 0, sourceRange{}, sourceRange{}
+	}
+	first, last = min(first, last), max(first, last)
 	codeLeft := 0
 	if m.width >= 90 {
 		codeLeft = m.filePaneWidth()
@@ -169,8 +173,12 @@ func (m Model) mouseSelectionRanges() (sourceRange, sourceRange) {
 		if len(rows) == 0 {
 			return sourceRange{}, sourceRange{}
 		}
-		first := clamp(m.splitScroll+startRow, 0, max(0, len(rows)-1))
-		last := clamp(m.splitScroll+endRow, first, max(0, len(rows)-1))
+		first, firstOK := m.splitRowAtWrappedVisualRow(startRow)
+		last, lastOK := m.splitRowAtWrappedVisualRow(endRow)
+		if !firstOK || !lastOK {
+			return sourceRange{}, sourceRange{}
+		}
+		first, last = min(first, last), max(first, last)
 		var selected []diff.Line
 		for _, row := range rows[first : last+1] {
 			if row.old != nil {
@@ -187,8 +195,12 @@ func (m Model) mouseSelectionRanges() (sourceRange, sourceRange) {
 	if len(lines) == 0 {
 		return sourceRange{}, sourceRange{}
 	}
-	first := clamp(m.lineScroll+startRow, 0, max(0, len(lines)-1))
-	last := clamp(m.lineScroll+endRow, first, max(0, len(lines)-1))
+	first, firstOK := m.unifiedLineAtWrappedVisualRow(startRow)
+	last, lastOK := m.unifiedLineAtWrappedVisualRow(endRow)
+	if !firstOK || !lastOK {
+		return sourceRange{}, sourceRange{}
+	}
+	first, last = min(first, last), max(first, last)
 	return diffSourceRanges(lines[first : last+1])
 }
 
