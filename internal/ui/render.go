@@ -159,6 +159,9 @@ func (m Model) renderFiles(width, height int) string {
 
 func (m Model) filePaneWidth() int {
 	compact := clamp(m.width*30/100, 26, 42)
+	if m.paneDragWidth > 0 && m.width >= 90 {
+		return clamp(m.paneDragWidth, 26, max(26, m.width-48))
+	}
 	if !m.wideFiles || m.width < 90 {
 		return compact
 	}
