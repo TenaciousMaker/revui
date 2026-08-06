@@ -13,6 +13,9 @@ type filePaneState struct {
 	fileLayout         fileLayout
 	fileScope          fileScope
 	wideFiles          bool
+	paneDragging       bool
+	paneDragWidth      int
+	paneDividerClickAt time.Time
 	treeCursor         int
 	treeNodes          []fileTreeNode
 	treeNodesReady     bool

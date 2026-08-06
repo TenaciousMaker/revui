@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 )
 
 const mouseWheelStep = 1
+
+const paneDividerDoubleClick = 400 * time.Millisecond
 
 const mouseWheelFrame = time.Second / 60
 
@@ -163,6 +166,19 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) Model {
 		}
 		return m
 	case normal:
+		if m.isPaneDividerPoint(msg.X, msg.Y) {
+			m.clearMouseSelection()
+			if m.now().Sub(m.paneDividerClickAt) <= paneDividerDoubleClick {
+				m.paneDividerClickAt = time.Time{}
+				m.paneDragWidth = 0
+				m.status = "File pane width reset to automatic."
+				m.persistPreferences()
+				return m
+			}
+			m.paneDividerClickAt = m.now()
+			m.paneDragging = true
+			return m
+		}
 		if m.isFilePanePoint(msg.X, msg.Y) {
 			m.clearMouseSelection()
 			m.positionFileRow(msg.Y)
@@ -187,6 +203,12 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) Model {
 }
 
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) Model {
+	if m.paneDragging {
+		// A drag is not a click: forget the pending double-click timestamp.
+		m.paneDividerClickAt = time.Time{}
+		m.applyPaneDrag(msg.X)
+		return m
+	}
 	if !m.mouseSelecting {
 		return m
 	}
@@ -197,6 +219,13 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) Model {
 }
 
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) Model {
+	if m.paneDragging {
+		m.applyPaneDrag(msg.X)
+		m.paneDragging = false
+		m.status = fmt.Sprintf("File pane width set to %d columns.", m.filePaneWidth())
+		m.persistPreferences()
+		return m
+	}
 	if !m.mouseSelecting {
 		return m
 	}
@@ -225,6 +254,20 @@ func (m Model) isCodePanePoint(x, y int) bool {
 		return m.focus == focusDiff
 	}
 	return x >= m.filePaneWidth()
+}
+
+// isPaneDividerPoint targets the file pane's right border with one cell of
+// grab tolerance on each side, because a one-cell target is hard to hit.
+func (m Model) isPaneDividerPoint(x, y int) bool {
+	if m.mode != normal || m.width < 90 || y < 5 || y >= m.height-1 {
+		return false
+	}
+	divider := m.filePaneWidth() - 1
+	return x >= divider-1 && x <= divider+1
+}
+
+func (m *Model) applyPaneDrag(x int) {
+	m.paneDragWidth = clamp(x+1, 26, max(26, m.width-48))
 }
 
 func (m Model) isFilePanePoint(x, y int) bool {

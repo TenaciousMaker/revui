@@ -41,6 +41,19 @@ func TestLoadWithFallbackMigrates(t *testing.T) {
 	}
 }
 
+func TestFilePaneWidthRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	want := Defaults()
+	want.FilePaneWidth = 57
+	if err := Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil || got.FilePaneWidth != 57 {
+		t.Fatalf("file pane width = %d, %v; want 57", got.FilePaneWidth, err)
+	}
+}
+
 func TestCorruptPreferencesReturnDefaultsAndError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {

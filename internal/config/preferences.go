@@ -17,6 +17,7 @@ type Preferences struct {
 	FileLayout       string `json:"file_layout"`
 	FileScope        string `json:"file_scope"`
 	WideFiles        bool   `json:"wide_files"`
+	FilePaneWidth    int    `json:"file_pane_width,omitempty"`
 	DiffView         string `json:"diff_view"`
 	IgnoreWhitespace bool   `json:"ignore_whitespace,omitempty"`
 	SemanticReflow   bool   `json:"semantic_reflow_experimental,omitempty"`
