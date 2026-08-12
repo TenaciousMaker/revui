@@ -195,8 +195,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMotionMsg:
 		return m.handleMouseMotion(msg), nil
 	case tea.MouseReleaseMsg:
+		dividerRelease := m.paneDragging || m.isPaneDividerPoint(msg.X, msg.Y)
 		m = m.handleMouseRelease(msg)
-		if msg.Button == tea.MouseLeft && !m.mouseSelectMoved && m.focus == focusDiff && m.sourcePath == "" {
+		if !dividerRelease && msg.Button == tea.MouseLeft && !m.mouseSelectMoved && m.focus == focusDiff && m.sourcePath == "" {
 			if _, ok := m.selectedHunkGap(); ok {
 				return m, m.expandSelectedHunkGap()
 			}
@@ -758,6 +759,7 @@ func (m *Model) toggleFilePaneWidth() {
 		m.status = "The file pane already fills this terminal width."
 		return
 	}
+	m.paneDragWidth = 0
 	m.wideFiles = !m.wideFiles
 	if m.wideFiles {
 		m.status = "File pane expanded to fit visible paths."
@@ -1003,6 +1005,9 @@ func (m *Model) applyPreferences(preferences config.Preferences) {
 		m.fileScope = allRepositoryFiles
 	}
 	m.wideFiles = preferences.WideFiles
+	if preferences.FilePaneWidth > 0 {
+		m.paneDragWidth = preferences.FilePaneWidth
+	}
 	if preferences.DiffView == "split" {
 		m.view = split
 	}
@@ -1026,6 +1031,7 @@ func (m *Model) persistPreferences() {
 		FileLayout:       "flat",
 		FileScope:        "changed",
 		WideFiles:        m.wideFiles,
+		FilePaneWidth:    m.paneDragWidth,
 		DiffView:         "unified",
 		IgnoreWhitespace: m.ignoreWhitespace,
 		SemanticReflow:   m.semanticReflow,
