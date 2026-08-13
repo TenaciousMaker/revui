@@ -30,6 +30,10 @@ const (
 
 type mouseWheelFrameMsg struct{}
 
+func scheduleMouseWheelFrame() tea.Cmd {
+	return tea.Tick(mouseWheelFrame, func(time.Time) tea.Msg { return mouseWheelFrameMsg{} })
+}
+
 func (m Model) queueMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	direction := 0
 	switch msg.Button {
@@ -53,7 +57,7 @@ func (m Model) queueMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.wheelBurst = 0
 		m.invalidateRender()
 		m.applyMouseWheel(target, direction*m.wheelVelocityStep())
-		return m, tea.Tick(mouseWheelFrame, func(time.Time) tea.Msg { return mouseWheelFrameMsg{} })
+		return m, scheduleMouseWheelFrame()
 	}
 	if direction != m.wheelDirection || target != m.wheelTarget {
 		m.wheelDirection = direction
@@ -65,6 +69,22 @@ func (m Model) queueMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	}
 	m.wheelBurst++
 	return m, nil
+}
+
+func (m Model) advanceMouseWheelFrame() (tea.Model, tea.Cmd) {
+	if !m.wheelScheduled {
+		return m, nil
+	}
+	if m.wheelBurst == 0 {
+		m.wheelScheduled = false
+		m.wheelDirection = 0
+		m.wheelTarget = wheelPaneNone
+		return m, nil
+	}
+	m.invalidateRender()
+	m.applyMouseWheel(m.wheelTarget, m.wheelDirection*m.wheelVelocityStep())
+	m.wheelBurst = 0
+	return m, scheduleMouseWheelFrame()
 }
 
 func (m Model) flushMouseWheel() Model {

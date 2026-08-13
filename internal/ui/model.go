@@ -90,6 +90,7 @@ type Model struct {
 	watchRefreshPending bool
 	renderVersion       uint64
 	renderCache         *renderCache
+	wrapMetrics         *wordWrapMetrics
 	diffDisplay         *diffDisplayCache
 	normalizedSplit     *normalizedSplitCache
 	semantic            semanticAnalysisState
@@ -124,6 +125,7 @@ func newModel(repo *gitrepo.Repository, preferences preferenceStore, reviews rev
 		contentPaneState: contentPaneState{view: unified, selectFrom: -1},
 		filePaneState:    filePaneState{collapsed: map[string]bool{}},
 		renderCache:      &renderCache{},
+		wrapMetrics:      newWordWrapMetrics(),
 		diffDisplay:      &diffDisplayCache{},
 		normalizedSplit:  &normalizedSplitCache{},
 		semantic: semanticAnalysisState{
@@ -188,7 +190,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		return m.queueMouseWheel(msg)
 	case mouseWheelFrameMsg:
-		return m.flushMouseWheel(), nil
+		return m.advanceMouseWheelFrame()
 	case tea.MouseClickMsg:
 		m = m.handleMouseClick(msg)
 		return m, m.ensureSemanticAnalysis()

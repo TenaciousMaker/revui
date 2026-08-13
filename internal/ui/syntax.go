@@ -28,6 +28,14 @@ type diffSyntaxDocument struct {
 	newLines map[int][]chroma.Token
 }
 
+type diffLineHighlightKey struct {
+	file       *diff.File
+	index      int
+	source     string
+	background string
+	spans      string
+}
+
 func (m Model) highlightLine(filename, source, background string) string {
 	if !m.theme.color || m.highlight == nil {
 		return source
@@ -117,6 +125,12 @@ func (h *highlighter) diffLine(file *diff.File, index int, source, background st
 	if file == nil || index < 0 || index >= len(file.Lines) {
 		return h.line("", source, background)
 	}
+	key := diffLineHighlightKey{
+		file: file, index: index, source: source, background: background, spans: textSpanCacheKey(spans),
+	}
+	if cached, ok := h.cache.Load(key); ok {
+		return cached.(string)
+	}
 	cached, ok := h.diffDocuments.Load(file)
 	if !ok {
 		document := buildDiffSyntaxDocument(file)
@@ -140,7 +154,22 @@ func (h *highlighter) diffLine(file *diff.File, index int, source, background st
 		}
 		highlighted = xansi.Truncate(highlighted, width, tail)
 	}
+	h.cache.Store(key, highlighted)
 	return highlighted
+}
+
+func textSpanCacheKey(spans []textSpan) string {
+	if len(spans) == 0 {
+		return ""
+	}
+	var key strings.Builder
+	for _, span := range spans {
+		key.WriteString(strconv.Itoa(span.start))
+		key.WriteByte(':')
+		key.WriteString(strconv.Itoa(span.end))
+		key.WriteByte(';')
+	}
+	return key.String()
 }
 
 func buildDiffSyntaxDocument(file *diff.File) *diffSyntaxDocument {

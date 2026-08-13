@@ -20,7 +20,12 @@ var workingDirectory = os.Getwd
 var openRepository = gitrepo.Open
 var runProgram = func(model ui.Model, input io.Reader, output io.Writer) error {
 	defer model.Close()
-	_, err := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(output)).Run()
+	_, err := tea.NewProgram(
+		model,
+		tea.WithInput(input),
+		tea.WithOutput(output),
+		tea.WithFilter(ui.NewInputFilter()),
+	).Run()
 	return err
 }
 

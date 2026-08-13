@@ -79,8 +79,59 @@ func TestMouseWheelBurstCoalescesIntoOneViewportUpdate(t *testing.T) {
 	}
 	updated, _ := m.Update(mouseWheelFrameMsg{})
 	m = updated.(Model)
-	if m.line != 0 || m.lineScroll <= mouseWheelStep || m.lineScroll > m.pageSize()+mouseWheelStep || m.wheelScheduled {
+	if m.line != 0 || m.lineScroll <= mouseWheelStep || m.lineScroll > m.pageSize()+mouseWheelStep || !m.wheelScheduled {
 		t.Fatalf("accelerated frame cursor=%d scroll=%d scheduled=%v page=%d", m.line, m.lineScroll, m.wheelScheduled, m.pageSize())
+	}
+	afterBurst := m.lineScroll
+	updated, _ = m.Update(mouseWheelFrameMsg{})
+	m = updated.(Model)
+	if m.lineScroll != afterBurst || m.wheelScheduled {
+		t.Fatalf("idle frame continued burst: before=%d after=%d scheduled=%v", afterBurst, m.lineScroll, m.wheelScheduled)
+	}
+}
+
+func TestMouseWheelFrameKeepsOneCoalescerUntilQueuedInputDrains(t *testing.T) {
+	var lines []diff.Line
+	for line := 1; line <= 500; line++ {
+		lines = append(lines, diff.Line{Kind: diff.Context, Text: fmt.Sprintf("line %d", line), OldNumber: line, NewNumber: line})
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "app.go", Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus = 140, 30, focusDiff
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return now }
+
+	updated, _ := m.Update(tea.MouseWheelMsg{X: 100, Y: 10, Button: tea.MouseWheelDown})
+	m = updated.(Model)
+	renderVersion := m.renderVersion
+	for range 100 {
+		now = now.Add(time.Millisecond)
+		updated, _ = m.Update(tea.MouseWheelMsg{X: 100, Y: 10, Button: tea.MouseWheelDown})
+		m = updated.(Model)
+	}
+	if m.renderVersion != renderVersion {
+		t.Fatalf("queued wheel events invalidated rendering: before=%d after=%d", renderVersion, m.renderVersion)
+	}
+
+	before := m.lineScroll
+	updated, cmd := m.Update(mouseWheelFrameMsg{})
+	m = updated.(Model)
+	if m.lineScroll <= before || !m.wheelScheduled || cmd == nil {
+		t.Fatalf("busy frame dropped coalescer: before=%d after=%d scheduled=%v cmd=%v", before, m.lineScroll, m.wheelScheduled, cmd)
+	}
+
+	afterBurst := m.lineScroll
+	now = now.Add(mouseWheelFrame)
+	updated, cmd = m.Update(mouseWheelFrameMsg{})
+	m = updated.(Model)
+	if m.lineScroll != afterBurst || m.wheelScheduled || cmd != nil {
+		t.Fatalf("idle frame continued scrolling: before=%d after=%d scheduled=%v cmd=%v", afterBurst, m.lineScroll, m.wheelScheduled, cmd)
 	}
 }
 
@@ -138,6 +189,63 @@ func BenchmarkMouseWheelRendering(b *testing.B) {
 		updated, _ := m.Update(wheel)
 		m = updated.(Model)
 		_ = m.View()
+		m = m.flushMouseWheel()
+	}
+}
+
+func BenchmarkWrappedTextMouseWheelRendering(b *testing.B) {
+	text := strings.Repeat("text-heavy source content with identifiers and punctuation; ", 20)
+	var lines []diff.Line
+	for line := 1; line <= 2000; line++ {
+		lines = append(lines, diff.Line{Kind: diff.Addition, Text: text, NewNumber: line})
+	}
+	repo := &gitrepo.Repository{
+		Root: b.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(b.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "Large.java", Lines: lines}},
+	}
+	m, err := newTestModel(b, repo)
+	if err != nil {
+		b.Fatal(err)
+	}
+	m.width, m.height, m.focus = 140, 40, focusDiff
+	wheel := tea.MouseWheelMsg{X: 100, Y: 10, Button: tea.MouseWheelDown}
+	b.ResetTimer()
+	for range b.N {
+		updated, _ := m.Update(wheel)
+		m = updated.(Model)
+		_ = m.View()
+		m = m.flushMouseWheel()
+	}
+}
+
+func TestTextHeavyScrollReusesRenderedRows(t *testing.T) {
+	var lines []diff.Line
+	for line := 1; line <= 500; line++ {
+		lines = append(lines, diff.Line{
+			Kind: diff.Addition, NewNumber: line,
+			Text: fmt.Sprintf("public static String method%d(String value) { return value + '%d'; }", line, line),
+		})
+	}
+	repo := &gitrepo.Repository{
+		Root: t.TempDir(), Branch: "feature", Base: "main", ReviewPath: filepath.Join(t.TempDir(), "review.json"),
+		Files: []diff.File{{Path: "Large.cls", Lines: lines}},
+	}
+	m, err := newTestModel(t, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height, m.focus = 180, 60, focusDiff
+	_ = m.View()
+
+	wheel := tea.MouseWheelMsg{X: 120, Y: 20, Button: tea.MouseWheelDown}
+	allocations := testing.AllocsPerRun(5, func() {
+		updated, _ := m.Update(wheel)
+		m = updated.(Model)
+		_ = m.View()
+		m = m.flushMouseWheel()
+	})
+	if allocations > 50_000 {
+		t.Fatalf("text-heavy scroll allocated %.0f objects per frame, want <=50000", allocations)
 	}
 }
 
